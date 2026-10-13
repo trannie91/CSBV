@@ -1,0 +1,10 @@
+{
+  "name": "BLVietsub",
+  "pluginClassName": "com.blvietsub.BLVietsubPlugin",
+  "description": "Kho phim BL - Tương thích 100% Cloudstream Android TV Box & Mobile.",
+  "version": 1,
+  "author": "BLVietsub",
+  "tvTypes": ["TvSeries", "Movie", "AsianDrama"],
+  "iconUrl": "https://blvietsub.com/wp-content/uploads/2021/08/cropped-favicon-32x32.png",
+  "language": "vi"
+}
