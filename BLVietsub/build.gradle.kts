@@ -8,5 +8,5 @@ cloudstream {
     status = 1
     tvTypes = listOf("TvSeries", "Movie", "AsianDrama")
     language = "vi"
-    iconUrl = "https://blvietsub.com/wp-content/uploads/2021/08/cropped-favicon-32x32.png"
+    iconUrl = "https://www.blvietsub.vip/favicon.ico"
 }
