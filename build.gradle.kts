@@ -1,7 +1,5 @@
 import com.lagradost.cloudstream3.gradle.CloudstreamExtension
 import com.android.build.gradle.BaseExtension
-import org.jetbrains.kotlin.gradle.dsl.JvmTarget
-import org.jetbrains.kotlin.gradle.tasks.KotlinJvmCompile
 
 buildscript {
     repositories {
@@ -10,9 +8,9 @@ buildscript {
         maven("https://jitpack.io")
     }
     dependencies {
-        classpath("com.android.tools.build:gradle:8.7.3")
-        classpath("com.github.recloudstream:gradle:-SNAPSHOT")
-        classpath("org.jetbrains.kotlin:kotlin-gradle-plugin:2.1.0")
+        classpath("com.android.tools.build:gradle:8.2.2")
+        classpath("com.github.recloudstream.gradle:gradle:81b1d424d")
+        classpath("org.jetbrains.kotlin:kotlin-gradle-plugin:2.0.21")
     }
 }
 
@@ -37,14 +35,14 @@ subprojects {
 
     cloudstream {
         // Tự động nhận URL repository từ GitHub Actions hoặc fallback mặc định
-        setRepo(System.getenv("GITHUB_REPOSITORY") ?: "https://github.com/ngoctrang1091/CloudBL")
+        setRepo(System.getenv("GITHUB_REPOSITORY") ?: "https://github.com/trannie91/CloudBL")
     }
 
     android {
+        compileSdkVersion(34)
+
         defaultConfig {
             minSdk = 21
-            compileSdkVersion(35)
-            targetSdk = 35
         }
 
         compileOptions {
@@ -52,15 +50,12 @@ subprojects {
             targetCompatibility = JavaVersion.VERSION_1_8
         }
 
-        tasks.withType<KotlinJvmCompile> {
-            compilerOptions {
-                jvmTarget.set(JvmTarget.JVM_1_8)
-                freeCompilerArgs.addAll(
+        tasks.withType<org.jetbrains.kotlin.gradle.tasks.KotlinCompile> {
+            kotlinOptions {
+                jvmTarget = "1.8"
+                freeCompilerArgs = freeCompilerArgs + listOf(
                     "-opt-in=kotlin.RequiresOptIn",
-                    "-Xskip-metadata-version-check",
-                    "-Xno-call-assertions",
-                    "-Xno-param-assertions",
-                    "-Xno-receiver-assertions"
+                    "-Xskip-metadata-version-check"
                 )
             }
         }
@@ -70,13 +65,12 @@ subprojects {
         val cloudstream by configurations
         val implementation by configurations
 
-        // Stubs chính thức cho Cloudstream, tự động tải classes.jar từ release
+        // Stubs chính thức cho Cloudstream
         cloudstream("com.lagradost:cloudstream3:pre-release")
 
         implementation(kotlin("stdlib"))
         implementation("com.github.Blatzar:NiceHttp:0.4.11")
         implementation("org.jsoup:jsoup:1.18.3")
-        // Giữ Jackson 2.13.1 theo khuyến cáo chính thức của Cloudstream để tương thích các thiết bị Android cũ
         implementation("com.fasterxml.jackson.module:jackson-module-kotlin:2.13.1")
     }
 }
