@@ -34,7 +34,7 @@ class VkExtractor : ExtractorApi() {
             app.get(cleanUrl, headers = headers).text
         } catch (t: Throwable) {
             try {
-                app.get(cleanUrl, headers = mapOf("User-Agent" to userAgent, "Referer" to (referer ?: "https://blvietsub.com/"))).text
+                app.get(cleanUrl, headers = mapOf("User-Agent" to userAgent, "Referer" to (referer ?: "https://www.blvietsub.vip/"))).text
             } catch (t2: Throwable) {
                 return
             }
@@ -55,9 +55,8 @@ class VkExtractor : ExtractorApi() {
 
         var emittedLink = false
 
-        // 1. Quét tìm url1080 trực tiếp trong JSON/script của VK (Ưu tiên chất lượng 1080p FHD cao nhất)
         val url1080Match = Regex("""["']url1080["']\s*[:=]\s*["']([^"']+)["']""").find(response)?.groupValues?.get(1)
-            ?: Regex("""\\?"url1080\\?"\s*:\s*\\?"([^"\\]+)\\?"""").find(response)?.groupValues?.get(1)
+            ?: Regex("""\\?"url1080\\?"\s*:\s*\\?"([^"\\]+)\\?""").find(response)?.groupValues?.get(1)
 
         if (!url1080Match.isNullOrEmpty()) {
             val videoUrl = cleanVkUrl(url1080Match)
@@ -79,9 +78,8 @@ class VkExtractor : ExtractorApi() {
             emittedLink = true
         }
 
-        // 2. Tìm luồng HLS m3u8 trong VK (HLS chứa luồng thích ứng 1080p FHD)
         val hlsMatch = Regex("""["']hls["']\s*[:=]\s*["']([^"']+)["']""").find(response)?.groupValues?.get(1)
-            ?: Regex("""https?://[^\s"']+\.m3u8[^\s"']*""").find(response)?.value
+            ?: Regex("""https?://[^\s'"]+\.m3u8[^\s'"]*""").find(response)?.value
 
         if (!hlsMatch.isNullOrEmpty()) {
             val hlsUrl = cleanVkUrl(hlsMatch)
@@ -103,10 +101,9 @@ class VkExtractor : ExtractorApi() {
             emittedLink = true
         }
 
-        // 3. Fallback: Nếu nguồn video gốc trên VK chỉ tải lên tối đa 720p HD (không có bản 1080p)
         if (!emittedLink) {
             val url720Match = Regex("""["']url720["']\s*[:=]\s*["']([^"']+)["']""").find(response)?.groupValues?.get(1)
-                ?: Regex("""\\?"url720\\?"\s*:\s*\\?"([^"\\]+)\\?"""").find(response)?.groupValues?.get(1)
+                ?: Regex("""\\?"url720\\?"\s*:\s*\\?"([^"\\]+)\\?""").find(response)?.groupValues?.get(1)
 
             if (!url720Match.isNullOrEmpty()) {
                 val videoUrl = cleanVkUrl(url720Match)
