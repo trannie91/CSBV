@@ -22,7 +22,6 @@ class OkRuExtractor : ExtractorApi() {
         callback: (ExtractorLink) -> Unit
     ) {
         val cleanUrl = url.replace("&amp;", "&")
-        // Chuẩn hóa URL embed: lấy videoId nếu có
         val videoId = Regex("""(?:videoembed|/video/)/?(\d+)""").find(cleanUrl)?.groupValues?.get(1)
         val targetUrl = if (!videoId.isNullOrEmpty()) {
             "https://ok.ru/videoembed/$videoId"
@@ -32,7 +31,6 @@ class OkRuExtractor : ExtractorApi() {
             cleanUrl
         }
 
-        // Tải trang embed của OK.ru với 2 phương án Header (Referer blvietsub hoặc ok.ru)
         var html = try {
             app.get(
                 targetUrl,
@@ -51,7 +49,7 @@ class OkRuExtractor : ExtractorApi() {
                     targetUrl,
                     headers = mapOf(
                         "User-Agent" to userAgent,
-                        "Referer" to (referer ?: "https://blvietsub.com/")
+                        "Referer" to (referer ?: "https://www.blvietsub.vip/")
                     )
                 ).text
             } catch (t: Throwable) {
@@ -65,7 +63,6 @@ class OkRuExtractor : ExtractorApi() {
         var hdUrl: String? = null
         var hlsUrl: String? = null
 
-        // 1. Trích xuất từ data-options
         val optMatch = Regex("""data-options="([^"]+)"""").find(html)?.groupValues?.get(1)
             ?: Regex("""data-options='([^']+)'""").find(html)?.groupValues?.get(1)
 
@@ -93,7 +90,6 @@ class OkRuExtractor : ExtractorApi() {
             }
         }
 
-        // 2. Fallback quét trực tiếp trong HTML nếu data-options bị mã hóa khác
         if (fullUrl.isNullOrEmpty()) {
             val fullDirect = Regex("""(?:"|&quot;)name(?:"|&quot;)\s*:\s*(?:"|&quot;)full(?:"|&quot;)\s*,\s*(?:"|&quot;)url(?:"|&quot;)\s*:\s*(?:"|&quot;)([^"&]+(?:&(?:quot;|amp;)[^"&]+)*)(?:"|&quot;)""").find(html)
             if (fullDirect != null) {
@@ -103,13 +99,12 @@ class OkRuExtractor : ExtractorApi() {
 
         if (hlsUrl.isNullOrEmpty()) {
             val hlsDirect = Regex("""(?:"|&quot;)hlsManifestUrl(?:"|&quot;)\s*:\s*(?:"|&quot;)([^"&]+(?:&(?:quot;|amp;)[^"&]+)*)(?:"|&quot;)""").find(html)
-                ?: Regex("""https?://[^\s"']*(?:okcdn\.ru|ok\.ru)/video\.m3u8[^\s"']*""").find(html)
+                ?: Regex("""https?://[^\s'"]*(?:okcdn\.ru|ok\.ru)/video\.m3u8[^\s'"]*""").find(html)
             if (hlsDirect != null) {
                 hlsUrl = hlsDirect.groupValues.getOrNull(1) ?: hlsDirect.value
             }
         }
 
-        // 3. Hàm làm sạch URL: thay thế \u0026, &amp;, \/
         fun cleanStreamUrl(raw: String): String {
             return raw
                 .replace("\\u0026", "&")
@@ -121,7 +116,6 @@ class OkRuExtractor : ExtractorApi() {
 
         var emittedLink = false
 
-        // 4. Phát luồng 1080p FHD Direct MP4 từ máy chủ OK.ru
         if (!fullUrl.isNullOrEmpty()) {
             val cleanedFull = cleanStreamUrl(fullUrl)
             callback.invoke(
@@ -142,7 +136,6 @@ class OkRuExtractor : ExtractorApi() {
             emittedLink = true
         }
 
-        // 5. Phát luồng 1080p FHD HLS Adaptive từ máy chủ OK.ru (Chuyển đổi độ phân giải mượt mà)
         if (!hlsUrl.isNullOrEmpty()) {
             val cleanedHls = cleanStreamUrl(hlsUrl)
             callback.invoke(
@@ -163,7 +156,6 @@ class OkRuExtractor : ExtractorApi() {
             emittedLink = true
         }
 
-        // 6. Fallback: Nếu không có bản 1080p thì phát bản 720p HD
         if (!emittedLink && !hdUrl.isNullOrEmpty()) {
             val cleanedHd = cleanStreamUrl(hdUrl)
             callback.invoke(
