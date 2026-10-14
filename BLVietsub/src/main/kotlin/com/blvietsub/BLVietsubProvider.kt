@@ -47,7 +47,7 @@ class BLVietsubProvider : MainAPI() {
     }
 
     private fun enhancePoster(url: String): String {
-        if (url.isEmpty()) return ""
+        if (url.isEmpty() || url.startsWith("data:image")) return ""
         var poster = url.trim().replace("&amp;", "&")
         if (poster.contains("googleusercontent.com") || poster.contains("bp.blogspot.com")) {
             poster = poster.replace(Regex("""=w\d+(-h\d+)?(-p-k-no-nu)?"""), "=s0")
@@ -138,9 +138,12 @@ class BLVietsubProvider : MainAPI() {
                     val postUrl = altLinkMatch?.groupValues?.get(1) ?: continue
 
                     var poster = ""
-                    val imgMatch = Regex("""<img[^>]+(?:src|data-src|scr)=['"]([^'"]+)['"]""").find(content)
-                    if (imgMatch != null) {
-                        poster = enhancePoster(imgMatch.groupValues[1])
+                    val candImgs = Regex("""(?:data-src|data-lazy-src|data-original|src)=['"]([^'"]+)['"]""").findAll(content).map { it.groupValues[1] }
+                    for (cand in candImgs) {
+                        if (!cand.startsWith("data:image") && !cand.contains("blank.gif") && !cand.contains("placeholder")) {
+                            poster = enhancePoster(cand)
+                            if (poster.isNotEmpty()) break
+                        }
                     }
 
                     val title = cleanTitle(rawTitle)
@@ -245,9 +248,12 @@ class BLVietsubProvider : MainAPI() {
                 val postUrl = altLinkMatch?.groupValues?.get(1) ?: continue
 
                 var poster = ""
-                val imgMatch = Regex("""<img[^>]+(?:src|data-src|scr)=['"]([^'"]+)['"]""").find(content)
-                if (imgMatch != null) {
-                    poster = enhancePoster(imgMatch.groupValues[1])
+                val candImgs = Regex("""(?:data-src|data-lazy-src|data-original|src)=['"]([^'"]+)['"]""").findAll(content).map { it.groupValues[1] }
+                for (cand in candImgs) {
+                    if (!cand.startsWith("data:image") && !cand.contains("blank.gif") && !cand.contains("placeholder")) {
+                        poster = enhancePoster(cand)
+                        if (poster.isNotEmpty()) break
+                    }
                 }
 
                 val title = cleanTitle(rawTitle)
