@@ -124,7 +124,7 @@ class BLVietsubProvider : MainAPI() {
                 )
             ).text
 
-            val entries = Regex("""\{"title":\{"\$t":"([^"]+)"\}[\s\S]*?"link":\[([\s\S]*?)\][\s\S]*?"content":\{"\$t":"([\s\S]*?)"\}""").findAll(responseText).toList()
+            val entries = Regex("""\{"title":\{"${'$'}t":"([^"]+)"\}[\s\S]*?"link":\[([\s\S]*?)\][\s\S]*?"content":\{"${'$'}t":"([\s\S]*?)"\}""").findAll(responseText).toList()
 
             // If manual regex found entries
             if (entries.isNotEmpty()) {
@@ -236,7 +236,7 @@ class BLVietsubProvider : MainAPI() {
                 )
             ).text
 
-            val entries = Regex("""\{"title":\{"\$t":"([^"]+)"\}[\s\S]*?"link":\[([\s\S]*?)\][\s\S]*?"content":\{"\$t":"([\s\S]*?)"\}""").findAll(responseText).toList()
+            val entries = Regex("""\{"title":\{"${'$'}t":"([^"]+)"\}[\s\S]*?"link":\[([\s\S]*?)\][\s\S]*?"content":\{"${'$'}t":"([\s\S]*?)"\}""").findAll(responseText).toList()
 
             for (entry in entries) {
                 val rawTitle = entry.groupValues[1].replace("\\\"", "\"").replace("\\/", "/")
