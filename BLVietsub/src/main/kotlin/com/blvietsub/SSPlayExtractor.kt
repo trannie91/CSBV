@@ -51,28 +51,10 @@ class SSPlayExtractor : ExtractorApi() {
         }
     }
 
-    override suspend fun getUrl(
-        url: String,
-        referer: String?,
-        subtitleCallback: (SubtitleFile) -> Unit,
-        callback: (ExtractorLink) -> Unit
-    ) {
-        val targetUrl = if (url.startsWith("http")) url else "$mainUrl$url"
-        val ref = referer ?: "https://www.blvietsub.vip/"
-        val headers = mapOf(
-            "Referer" to ref,
-            "User-Agent" to userAgent
-        )
-
-        val response = try {
-            app.get(targetUrl, headers = headers).text
-        } catch (t: Throwable) {
-            return
-        }
-
+    private fun extractStreamFromHtml(html: String, callback: (ExtractorLink) -> Unit): Boolean {
         // 1. Kiểm tra trực tiếp đường dẫn /ST/ hoặc /SU/ trong mã HTML
-        val directSuMatch = Regex("""["'](/S[UT]/[^"']+)["']""").find(response)?.groupValues?.get(1)
-            ?: Regex("""/S[UT]/[a-zA-Z0-9_\-./]+""").find(response)?.value
+        val directSuMatch = Regex("""["'](/S[UT]/[^"']+)["']""").find(html)?.groupValues?.get(1)
+            ?: Regex("""/S[UT]/[a-zA-Z0-9_\-./]+""").find(html)?.value
 
         if (directSuMatch != null) {
             val streamUrl = if (directSuMatch.startsWith("http")) directSuMatch else "https://ssplay.net$directSuMatch"
@@ -91,11 +73,11 @@ class SSPlayExtractor : ExtractorApi() {
                     )
                 }
             )
-            return
+            return true
         }
 
         // 2. Tìm link .m3u8 trực tiếp
-        val m3u8Match = Regex("""https?://[^\s"']+\.m3u8[^\s"']*""").find(response)?.value
+        val m3u8Match = Regex("""https?://[^\s"']+\.m3u8[^\s"']*""").find(html)?.value
         if (m3u8Match != null) {
             callback.invoke(
                 newExtractorLink(
@@ -112,11 +94,11 @@ class SSPlayExtractor : ExtractorApi() {
                     )
                 }
             )
-            return
+            return true
         }
 
-        // 3. QUAN TRỌNG: Quét TOÀN BỘ các khối Dean Edwards Packer (ssplay có tới 5 khối eval)
-        val packedMatches = Regex("""eval\(function\(p,a,c,k,e,d\)[\s\S]*?split\(['"]\|['"]\)\)\)""").findAll(response).toList()
+        // 3. Quét TOÀN BỘ các khối Dean Edwards Packer
+        val packedMatches = Regex("""eval\(function\(p,a,c,k,e,d\)[\s\S]*?split\(['"]\|['"]\)\)\)""").findAll(html).toList()
         for (match in packedMatches) {
             val unpacked = unPackDeanEdwards(match.value)
             if (unpacked.isEmpty()) continue
@@ -142,11 +124,13 @@ class SSPlayExtractor : ExtractorApi() {
                         )
                     }
                 )
-                return
+                return true
             }
 
             // Tìm thuộc tính "file": "/ST/...", "/SU/..." hoặc ".m3u8"
             val fileMatch = Regex("""["']file["']\s*:\s*["']([^"']+)["']""").find(unpacked)?.groupValues?.get(1)
+                ?: Regex("""file\s*:\s*["']([^"']+)["']""").find(unpacked)?.groupValues?.get(1)
+
             if (fileMatch != null && (fileMatch.contains(".m3u8") || fileMatch.contains("/SU/") || fileMatch.contains("/ST/"))) {
                 val finalUrl = if (fileMatch.startsWith("http")) fileMatch else "https://ssplay.net$fileMatch"
                 callback.invoke(
@@ -164,8 +148,48 @@ class SSPlayExtractor : ExtractorApi() {
                         )
                     }
                 )
-                return
+                return true
             }
+        }
+
+        return false
+    }
+
+    override suspend fun getUrl(
+        url: String,
+        referer: String?,
+        subtitleCallback: (SubtitleFile) -> Unit,
+        callback: (ExtractorLink) -> Unit
+    ) {
+        val targetUrl = if (url.startsWith("http")) url else "$mainUrl$url"
+        val ref = referer ?: "https://www.blvietsub.vip/"
+        val headers = mapOf(
+            "Referer" to ref,
+            "User-Agent" to userAgent
+        )
+
+        val response = try {
+            app.get(targetUrl, headers = headers).text
+        } catch (t: Throwable) {
+            return
+        }
+
+        // Thử giải nén trực tiếp từ nội dung trang
+        if (extractStreamFromHtml(response, callback)) {
+            return
+        }
+
+        // Nếu trang chứa iframe (như trường hợp ssplay.net/ok/..., ssplay.net/v/...), theo dõi iframe con
+        val iframeSrc = Regex("""<iframe[^>]+src=["']([^"']+)["']""").find(response)?.groupValues?.get(1)
+        if (!iframeSrc.isNullOrEmpty()) {
+            val nextUrl = if (iframeSrc.startsWith("http")) iframeSrc else "https://ssplay.net$iframeSrc"
+            try {
+                val childHtml = app.get(nextUrl, headers = mapOf(
+                    "Referer" to targetUrl,
+                    "User-Agent" to userAgent
+                )).text
+                extractStreamFromHtml(childHtml, callback)
+            } catch (_: Throwable) {}
         }
     }
 }
