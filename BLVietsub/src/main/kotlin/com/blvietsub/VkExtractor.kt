@@ -21,9 +21,14 @@ class VkExtractor : ExtractorApi() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ) {
-        val cleanUrl = url
-            .replace("&amp;", "&")
-            .replace("vkvideo.ru", "vk.com")
+        // Chuẩn hóa link VK: chuyển video{oid}_{id} thành video_ext.php?oid={oid}&id={id}
+        var targetUrl = url.replace("&amp;", "&").replace("vkvideo.ru", "vk.com")
+        val videoMatch = Regex("""video(-?\d+)_(\d+)""").find(targetUrl)
+        if (videoMatch != null) {
+            val oid = videoMatch.groupValues[1]
+            val id = videoMatch.groupValues[2]
+            targetUrl = "https://vk.com/video_ext.php?oid=$oid&id=$id"
+        }
 
         val headers = mapOf(
             "User-Agent" to userAgent,
@@ -31,10 +36,10 @@ class VkExtractor : ExtractorApi() {
         )
 
         val response = try {
-            app.get(cleanUrl, headers = headers).text
+            app.get(targetUrl, headers = headers).text
         } catch (t: Throwable) {
             try {
-                app.get(cleanUrl, headers = mapOf("User-Agent" to userAgent, "Referer" to (referer ?: "https://www.blvietsub.vip/"))).text
+                app.get(targetUrl, headers = mapOf("User-Agent" to userAgent, "Referer" to (referer ?: "https://www.blvietsub.vip/"))).text
             } catch (t2: Throwable) {
                 return
             }
@@ -53,8 +58,7 @@ class VkExtractor : ExtractorApi() {
                 .trim()
         }
 
-        var emittedLink = false
-
+        // 1. Quét tìm url1080 trực tiếp trong JSON/script của VK (Ưu tiên chất lượng 1080p FHD cao nhất)
         val url1080Match = Regex("""["']url1080["']\s*[:=]\s*["']([^"']+)["']""").find(response)?.groupValues?.get(1)
             ?: Regex("""\\?"url1080\\?"\s*:\s*\\?"([^"\\]+)\\?""").find(response)?.groupValues?.get(1)
 
@@ -75,9 +79,9 @@ class VkExtractor : ExtractorApi() {
                     )
                 }
             )
-            emittedLink = true
         }
 
+        // 2. Tìm luồng HLS m3u8 trong VK (HLS chứa luồng thích ứng 1080p FHD)
         val hlsMatch = Regex("""["']hls["']\s*[:=]\s*["']([^"']+)["']""").find(response)?.groupValues?.get(1)
             ?: Regex("""https?://[^\s'"]+\.m3u8[^\s'"]*""").find(response)?.value
 
@@ -98,31 +102,6 @@ class VkExtractor : ExtractorApi() {
                     )
                 }
             )
-            emittedLink = true
-        }
-
-        if (!emittedLink) {
-            val url720Match = Regex("""["']url720["']\s*[:=]\s*["']([^"']+)["']""").find(response)?.groupValues?.get(1)
-                ?: Regex("""\\?"url720\\?"\s*:\s*\\?"([^"\\]+)\\?""").find(response)?.groupValues?.get(1)
-
-            if (!url720Match.isNullOrEmpty()) {
-                val videoUrl = cleanVkUrl(url720Match)
-                callback.invoke(
-                    newExtractorLink(
-                        source = name,
-                        name = "Server VK - 720p HD",
-                        url = videoUrl,
-                        type = ExtractorLinkType.VIDEO
-                    ) {
-                        this.quality = Qualities.P720.value
-                        this.referer = "https://vk.com/"
-                        this.headers = mapOf(
-                            "Referer" to "https://vk.com/",
-                            "User-Agent" to userAgent
-                        )
-                    }
-                )
-            }
         }
     }
 }
