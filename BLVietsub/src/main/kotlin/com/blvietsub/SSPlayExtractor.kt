@@ -51,7 +51,7 @@ class SSPlayExtractor : ExtractorApi() {
         }
     }
 
-    private fun extractStreamFromHtml(html: String, callback: (ExtractorLink) -> Unit): Boolean {
+    private suspend fun extractStreamFromHtml(html: String, callback: (ExtractorLink) -> Unit): Boolean {
         // 1. Kiểm tra trực tiếp đường dẫn /ST/ hoặc /SU/ trong mã HTML
         val directSuMatch = Regex("""["'](/S[UT]/[^"']+)["']""").find(html)?.groupValues?.get(1)
             ?: Regex("""/S[UT]/[a-zA-Z0-9_\-./]+""").find(html)?.value
