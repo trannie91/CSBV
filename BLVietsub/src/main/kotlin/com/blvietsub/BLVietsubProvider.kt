@@ -1,6 +1,7 @@
 package com.blvietsub
 
 import com.lagradost.cloudstream3.*
+import com.lagradost.cloudstream3.network.WebViewResolver
 import com.lagradost.cloudstream3.utils.*
 import org.json.JSONObject
 import org.jsoup.Jsoup
@@ -35,6 +36,7 @@ class BLVietsubProvider : MainAPI() {
     )
 
     private val userAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+    private val v19Api = "https://blvietsub-v19-api.yaoivn.workers.dev"
 
     private fun cleanTitle(str: String): String {
         return str
@@ -58,6 +60,15 @@ class BLVietsubProvider : MainAPI() {
     }
 
     private fun extractPoster(element: Element): String {
+        // 1. Kiểm tra thuộc tính data-image trên thẻ hoặc thẻ con
+        val dataImg = element.attr("data-image").ifEmpty {
+            element.selectFirst("[data-image]")?.attr("data-image") ?: ""
+        }
+        if (dataImg.isNotEmpty() && !dataImg.startsWith("data:image")) {
+            return enhancePoster(dataImg)
+        }
+
+        // 2. Kiểm tra thẻ img với các thuộc tính phổ biến
         val img = element.selectFirst("img")
         var poster = ""
 
@@ -87,6 +98,7 @@ class BLVietsubProvider : MainAPI() {
             }
         }
 
+        // 3. Kiểm tra ảnh nền background-image
         if (poster.isEmpty() || poster.startsWith("data:image")) {
             val styleEl = element.selectFirst("[style*='background-image'], [data-bg], [data-background]")
             val bgStyle = styleEl?.attr("style") ?: ""
@@ -98,7 +110,70 @@ class BLVietsubProvider : MainAPI() {
             }
         }
 
+        // 4. Quét regex TMDB image nếu có trong HTML thẻ
+        if (poster.isEmpty()) {
+            val tmdbMatch = Regex("""https://image\.tmdb\.org/t/p/[^\s"'<>]+""").find(element.outerHtml())?.value
+            if (!tmdbMatch.isNullOrEmpty()) {
+                poster = tmdbMatch
+            }
+        }
+
         return enhancePoster(poster)
+    }
+
+    private fun extractPosterFromFeedEntry(entry: JSONObject): String {
+        // 1. Tìm trong link enclosures (đặc biệt chuẩn TMDB original image trên blvietsub v18/v19)
+        val links = entry.optJSONArray("link")
+        if (links != null) {
+            for (j in 0 until links.length()) {
+                val l = links.getJSONObject(j)
+                val rel = l.optString("rel")
+                val type = l.optString("type")
+                val href = l.optString("href")
+                if (rel == "enclosure" || type.startsWith("image/") || href.contains("image.tmdb.org")) {
+                    val enhanced = enhancePoster(href)
+                    if (enhanced.isNotEmpty()) return enhanced
+                }
+            }
+        }
+
+        // 2. Tìm trong summary hoặc content text
+        val summary = entry.optJSONObject("summary")?.optString("\$t") ?: ""
+        val content = entry.optJSONObject("content")?.optString("\$t") ?: ""
+        val combinedText = "$summary $content"
+
+        if (combinedText.isNotEmpty()) {
+            // Check data-image attribute
+            val dataImgMatch = Regex("""data-image=['"]([^'"]+)['"]""").find(combinedText)?.groupValues?.get(1)
+            if (!dataImgMatch.isNullOrEmpty() && !dataImgMatch.startsWith("data:image")) {
+                val enhanced = enhancePoster(dataImgMatch)
+                if (enhanced.isNotEmpty()) return enhanced
+            }
+
+            // Check TMDB url
+            val tmdbMatch = Regex("""https://image\.tmdb\.org/t/p/[^\s"'<>]+""").find(combinedText)?.value
+            if (!tmdbMatch.isNullOrEmpty()) {
+                val enhanced = enhancePoster(tmdbMatch)
+                if (enhanced.isNotEmpty()) return enhanced
+            }
+
+            // Check standard img tags
+            val candImgs = Regex("""(?:data-src|data-lazy-src|data-original|src)=['"]([^'"]+)['"]""").findAll(combinedText).map { it.groupValues[1] }
+            for (cand in candImgs) {
+                if (!cand.startsWith("data:image") && !cand.contains("blank.gif") && !cand.contains("placeholder")) {
+                    val enhanced = enhancePoster(cand)
+                    if (enhanced.isNotEmpty()) return enhanced
+                }
+            }
+        }
+
+        // 3. Fallback: media$thumbnail
+        val mediaThumb = entry.optJSONObject("media\$thumbnail")?.optString("url") ?: ""
+        if (mediaThumb.isNotEmpty()) {
+            return enhancePoster(mediaThumb)
+        }
+
+        return ""
     }
 
     override suspend fun getMainPage(
@@ -150,20 +225,17 @@ class BLVietsubProvider : MainAPI() {
                         }
                         if (postUrl.isEmpty()) continue
 
-                        val contentObj = entry.optJSONObject("content")
-                        val content = contentObj?.optString("\$t") ?: ""
-
-                        var poster = ""
-                        val candImgs = Regex("""(?:data-src|data-lazy-src|data-original|src)=['"]([^'"]+)['"]""").findAll(content).map { it.groupValues[1] }
-                        for (cand in candImgs) {
-                            if (!cand.startsWith("data:image") && !cand.contains("blank.gif") && !cand.contains("placeholder")) {
-                                poster = enhancePoster(cand)
-                                if (poster.isNotEmpty()) break
-                            }
-                        }
-
+                        val poster = extractPosterFromFeedEntry(entry)
                         val title = cleanTitle(rawTitle)
-                        val tvType = if (content.contains("phim-le") || content.contains("[br/FULL]")) TvType.Movie else TvType.AsianDrama
+                        val summaryText = entry.optJSONObject("summary")?.optString("\$t") ?: ""
+                        val contentText = entry.optJSONObject("content")?.optString("\$t") ?: ""
+                        val allText = "$title $summaryText $contentText"
+
+                        val tvType = if (allText.contains("phim-le") || allText.contains("[br/FULL]") || allText.contains("Full Phim", ignoreCase = true)) {
+                            TvType.Movie
+                        } else {
+                            TvType.AsianDrama
+                        }
 
                         items.add(
                             newTvSeriesSearchResponse(title, postUrl, tvType) {
@@ -173,16 +245,16 @@ class BLVietsubProvider : MainAPI() {
                     }
                 }
             }
-        } catch (t: Throwable) {
-            // Fallback: Parse HTML from web page nếu feed gặp sự cố
+        } catch (_: Throwable) {
+            // Fallback: Parse HTML từ web page nếu feed gặp sự cố
             try {
                 val htmlUrl = if (request.data.isEmpty()) {
                     "$mainUrl/search?max-results=$maxResults"
                 } else {
-                    "$mainUrl/search/label/${request.data}?max-results=$maxResults"
+                    "$mainUrl/search/label/${URLEncoder.encode(request.data, "UTF-8")}?max-results=$maxResults"
                 }
                 val doc = app.get(htmlUrl, headers = mapOf("User-Agent" to userAgent)).document
-                val htmlItems = doc.select("a.lable-about, article.post, .all-post .item").mapNotNull { el ->
+                val htmlItems = doc.select("a.lable-about, .lable-update, article.post, .all-post .item").mapNotNull { el ->
                     toSearchResult(el)
                 }.distinctBy { it.url }
                 items.addAll(htmlItems)
@@ -225,7 +297,13 @@ class BLVietsubProvider : MainAPI() {
         val title = cleanTitle(rawTitle)
         val poster = extractPoster(element)
 
-        return newTvSeriesSearchResponse(title, href, TvType.AsianDrama) {
+        val tvType = if (title.contains("FULL", ignoreCase = true) || href.contains("phim-le")) {
+            TvType.Movie
+        } else {
+            TvType.AsianDrama
+        }
+
+        return newTvSeriesSearchResponse(title, href, tvType) {
             this.posterUrl = poster
         }
     }
@@ -274,20 +352,17 @@ class BLVietsubProvider : MainAPI() {
                     }
                     if (postUrl.isEmpty()) continue
 
-                    val contentObj = entry.optJSONObject("content")
-                    val content = contentObj?.optString("\$t") ?: ""
-
-                    var poster = ""
-                    val candImgs = Regex("""(?:data-src|data-lazy-src|data-original|src)=['"]([^'"]+)['"]""").findAll(content).map { it.groupValues[1] }
-                    for (cand in candImgs) {
-                        if (!cand.startsWith("data:image") && !cand.contains("blank.gif") && !cand.contains("placeholder")) {
-                            poster = enhancePoster(cand)
-                            if (poster.isNotEmpty()) break
-                        }
-                    }
-
+                    val poster = extractPosterFromFeedEntry(entry)
                     val title = cleanTitle(rawTitle)
-                    val tvType = if (content.contains("[br/FULL]")) TvType.Movie else TvType.AsianDrama
+                    val summaryText = entry.optJSONObject("summary")?.optString("\$t") ?: ""
+                    val contentText = entry.optJSONObject("content")?.optString("\$t") ?: ""
+                    val allText = "$title $summaryText $contentText"
+
+                    val tvType = if (allText.contains("phim-le") || allText.contains("[br/FULL]") || allText.contains("Full Phim", ignoreCase = true)) {
+                        TvType.Movie
+                    } else {
+                        TvType.AsianDrama
+                    }
 
                     results.add(
                         newTvSeriesSearchResponse(title, postUrl, tvType) {
@@ -296,7 +371,7 @@ class BLVietsubProvider : MainAPI() {
                     )
                 }
             }
-        } catch (t: Throwable) {}
+        } catch (_: Throwable) {}
 
         // Fallback: HTML search
         if (results.isEmpty()) {
@@ -307,7 +382,7 @@ class BLVietsubProvider : MainAPI() {
                     "Referer" to "$mainUrl/"
                 )).document
 
-                val htmlResults = doc.select("a.lable-about, article.post").mapNotNull {
+                val htmlResults = doc.select("a.lable-about, .lable-update, article.post").mapNotNull {
                     toSearchResult(it)
                 }.distinctBy { it.url }
 
@@ -322,24 +397,44 @@ class BLVietsubProvider : MainAPI() {
         val doc = app.get(url, headers = mapOf("User-Agent" to userAgent)).document
         val htmlFull = doc.html()
 
-        // Tiêu đề phim
+        // 1. Tiêu đề phim
         val rawTitle = doc.selectFirst("h1.post-title, h1, .post-title, .film-info h1")?.text()?.trim()
             ?: doc.selectFirst("title")?.text()?.split("-")?.firstOrNull()?.trim()
             ?: return null
         val title = cleanTitle(rawTitle)
 
-        // Poster phim chuẩn HD
-        val thumbEl = doc.selectFirst("#thumbnail-phim, .poster img, [name=main-movie-content] img")
-        val poster = if (thumbEl != null) {
-            extractPoster(thumbEl)
-        } else {
+        // 2. Poster phim chuẩn HD (TMDB / Enclosure / Poster)
+        var poster = ""
+        val tmdbImg = doc.selectFirst("img[src*='image.tmdb.org']")?.attr("src")
+        if (!tmdbImg.isNullOrEmpty()) {
+            poster = enhancePoster(tmdbImg)
+        }
+        if (poster.isEmpty()) {
+            val dataImg = doc.selectFirst("[data-image]")?.attr("data-image")
+            if (!dataImg.isNullOrEmpty()) {
+                poster = enhancePoster(dataImg)
+            }
+        }
+        if (poster.isEmpty()) {
+            val thumbEl = doc.selectFirst("#thumbnail-phim, .poster img, .page-cover img, [name=main-movie-content] img")
+            if (thumbEl != null) {
+                poster = extractPoster(thumbEl)
+            }
+        }
+        if (poster.isEmpty()) {
             val ogImg = doc.selectFirst("meta[property=og:image], meta[name=twitter:image]")?.attr("content") ?: ""
-            enhancePoster(ogImg)
+            poster = enhancePoster(ogImg)
+        }
+        if (poster.isEmpty()) {
+            val tmdbRegex = Regex("""https://image\.tmdb\.org/t/p/[^\s"'<>]+""").find(htmlFull)?.value
+            if (!tmdbRegex.isNullOrEmpty()) {
+                poster = enhancePoster(tmdbRegex)
+            }
         }
 
-        // Nội dung mô tả [nd]...[/nd]
+        // 3. Nội dung mô tả [nd]...[/nd]
         val mainContent = doc.selectFirst("[name=main-movie-list], .movie-content-1, article")?.html() ?: htmlFull
-        val ndMatch = Regex("""\[nd\]([\s\S]*?)\[/nd\]""").find(mainContent)
+        val ndMatch = Regex("""\[nd\]([\s\S]*?)\[/nd\]""").find(mainContent) ?: Regex("""\[nd\]([\s\S]*?)\[/nd\]""").find(htmlFull)
         val description = if (ndMatch != null) {
             Jsoup.parse(ndMatch.groupValues[1]).text().trim()
         } else {
@@ -352,123 +447,199 @@ class BLVietsubProvider : MainAPI() {
         val year = Regex("""\((\d{4})\)""").find(title)?.groupValues?.get(1)?.toIntOrNull()
         val tags = doc.select("a[href*='/search/label/']").map { it.text().trim() }.distinct()
 
-        // Bóc tách TOÀN BỘ các thẻ <id>...</id> trong toàn bộ trang (hỗ trợ đầy đủ phim mới và phim cũ)
         val episodes = mutableListOf<Episode>()
-        val idBlocks = mutableListOf<String>()
 
-        Regex("""<id>([\s\S]*?)</id>""").findAll(htmlFull).forEach {
-            idBlocks.add(it.groupValues[1])
-        }
-        if (idBlocks.isEmpty()) {
-            idBlocks.add(mainContent)
-        }
+        // 4. KIỂM TRA HỆ THỐNG BLVIETSUB V19 (Cloud Player manifest API)
+        val movieId = Regex("""data-blv-movie=["']([^"']+)["']""").find(htmlFull)?.groupValues?.get(1)
+        var hasV19Manifest = false
 
-        val epMap = linkedMapOf<Int, MutableMap<String, String>>()
+        if (!movieId.isNullOrEmpty()) {
+            try {
+                val manifestUrl = "$v19Api/api/v1/movies/$movieId/manifest"
+                val manifestRes = app.get(
+                    manifestUrl,
+                    headers = mapOf(
+                        "Origin" to mainUrl,
+                        "Referer" to url,
+                        "User-Agent" to userAgent
+                    )
+                ).text
 
-        for (idBlock in idBlocks) {
-            // Phân tách các cụm server [br/...]
-            val sections = idBlock.split(Regex("""\[br/([^\]]+)\]"""))
-            val serverNames = Regex("""\[br/([^\]]+)\]""").findAll(idBlock).map { it.groupValues[1].trim() }.toList()
+                val manifestJson = JSONObject(manifestRes)
+                val serversArr = manifestJson.optJSONArray("servers")
 
-            val parsedSections = mutableListOf<Pair<String, String>>()
-            if (serverNames.isEmpty()) {
-                parsedSections.add("Default" to idBlock)
-            } else {
-                for (i in serverNames.indices) {
-                    val sName = serverNames[i]
-                    val sContent = sections.getOrNull(i + 1) ?: ""
-                    parsedSections.add(sName to sContent)
-                }
-            }
+                if (serversArr != null && serversArr.length() > 0) {
+                    hasV19Manifest = true
 
-            for ((sName, sContent) in parsedSections) {
-                val lowerSName = sName.lowercase()
-                val buttonMatches = Regex("""\[([^\]|*-\/]+)[|*-]([^\]]+)\]""").findAll(sContent).toList()
+                    // Tập hợp các server theo từng tập phim
+                    // epMap: Map<EpisodeLabel, Map<ServerKey, EpisodeId>>
+                    val v19EpMap = linkedMapOf<String, MutableMap<String, String>>()
 
-                for (bm in buttonMatches) {
-                    val rawTag = bm.groupValues[1].trim()
-                    val rawUrl = bm.groupValues[2].trim().replace("&amp;", "&")
-                    val lowerTag = rawTag.lowercase()
-                    val lowerUrl = rawUrl.lowercase()
-
-                    val numMatch = Regex("""\d+""").find(rawTag)
-                    val isNumeric = numMatch != null && lowerTag !in listOf("ss", "ok", "vk", "hx", "dl")
-                    val epNum = if (isNumeric) numMatch!!.value.toIntOrNull() ?: 1 else 1
-
-                    if (!epMap.containsKey(epNum)) {
-                        epMap[epNum] = mutableMapOf()
-                    }
-
-                    // Phân loại nguồn server chính xác
-                    when {
-                        // 1. Máy chủ SSPlay
-                        lowerUrl.contains("ssplay.net") || lowerSName.contains("ss") || lowerTag == "ss" -> {
-                            epMap[epNum]?.put("ss", rawUrl)
-
-                            // Nếu URL SSPlay có dạng ssplay.net/ok/{id}, trích xuất thêm ID làm nguồn OK.ru dự phòng
-                            val okIdMatch = Regex("""/ok/(\d+)""").find(rawUrl)?.groupValues?.get(1)
-                            if (!okIdMatch.isNullOrEmpty() && epMap[epNum]?.get("ok").isNullOrEmpty()) {
-                                epMap[epNum]?.put("ok", "https://ok.ru/videoembed/$okIdMatch?autoplay=1")
-                            }
+                    for (sIdx in 0 until serversArr.length()) {
+                        val sObj = serversArr.getJSONObject(sIdx)
+                        val sName = sObj.optString("name", "Server ${sIdx + 1}")
+                        val sLower = sName.lowercase()
+                        val sKey = when {
+                            sLower.contains("ss") -> "ss"
+                            sLower.contains("dl") || sLower.contains("dailymotion") -> "dl"
+                            sLower.contains("ok") -> "ok"
+                            sLower.contains("vk") -> "vk"
+                            sLower.contains("hx") -> "hx"
+                            sLower.contains("gd") -> "gd"
+                            else -> "s${sIdx + 1}"
                         }
 
-                        // 2. Máy chủ Dailymotion (Server DL)
-                        lowerUrl.contains("dailymotion.com") || lowerSName.contains("dl") || lowerTag == "dl" -> {
-                            epMap[epNum]?.put("dl", rawUrl)
-                        }
-
-                        // 3. Máy chủ OK.ru (Server OK)
-                        lowerUrl.contains("ok.ru") || lowerSName.contains("ok") || lowerTag == "ok" -> {
-                            epMap[epNum]?.put("ok", rawUrl)
-                        }
-
-                        // 4. Máy chủ VK (Server VK)
-                        lowerUrl.contains("vk.com") || lowerUrl.contains("vkvideo.ru") || lowerSName.contains("vk") || lowerTag == "vk" -> {
-                            epMap[epNum]?.put("vk", rawUrl)
-                        }
-
-                        // 5. Máy chủ HX / Abyss
-                        lowerUrl.contains("abyssplayer.com") || lowerUrl.contains("abyss") || lowerUrl.contains("hxfile") || lowerUrl.contains("short.icu") || lowerSName.contains("hx") || lowerTag == "hx" -> {
-                            epMap[epNum]?.put("hx", rawUrl)
-                        }
-
-                        else -> {
-                            if (epMap[epNum]?.get("other").isNullOrEmpty()) {
-                                epMap[epNum]?.put("other", rawUrl)
+                        val epsArr = sObj.optJSONArray("episodes") ?: continue
+                        for (eIdx in 0 until epsArr.length()) {
+                            val epObj = epsArr.getJSONObject(eIdx)
+                            val epId = epObj.optString("id")
+                            val label = epObj.optString("label").trim()
+                            if (epId.isNotEmpty() && label.isNotEmpty()) {
+                                if (!v19EpMap.containsKey(label)) {
+                                    v19EpMap[label] = mutableMapOf()
+                                }
+                                v19EpMap[label]?.put(sKey, epId)
                             }
                         }
                     }
+
+                    // Sắp xếp tập theo thứ tự tăng dần
+                    val sortedEntries = v19EpMap.entries.sortedBy { entry ->
+                        Regex("""\d+""").find(entry.key)?.value?.toIntOrNull() ?: 999
+                    }
+
+                    for (entry in sortedEntries) {
+                        val label = entry.key
+                        val sMap = entry.value
+                        val epNum = Regex("""\d+""").find(label)?.value?.toIntOrNull() ?: 1
+
+                        val epName = if (sortedEntries.size == 1 && (title.contains("FULL", ignoreCase = true) || label.contains("full", ignoreCase = true))) {
+                            "Full Movie (1080p FHD)"
+                        } else {
+                            "Tập $label"
+                        }
+
+                        // Payload JSON chứa movie_id, label, ep_num và map server IDs
+                        val serverParts = sMap.map { "\"${it.key}\":\"${it.value.replace("\"", "\\\"")}\"" }
+                        val serversJson = "{" + serverParts.joinToString(",") + "}"
+                        val payload = """{"v":19,"movie_id":"$movieId","page_url":"${url.replace("\"", "\\\"")}","ep_num":$epNum,"ep_label":"$label","servers":$serversJson}"""
+
+                        episodes.add(
+                            newEpisode(payload) {
+                                this.name = epName
+                                this.episode = epNum
+                            }
+                        )
+                    }
                 }
-            }
+            } catch (_: Throwable) {}
         }
 
-        if (epMap.isNotEmpty()) {
-            epMap.entries.sortedBy { it.key }.forEach { (epNum, servers) ->
-                val jsonParts = mutableListOf<String>()
-                servers["ss"]?.let { jsonParts.add(""""ss":"${it.replace("\"", "\\\"")}"""") }
-                servers["dl"]?.let { jsonParts.add(""""dl":"${it.replace("\"", "\\\"")}"""") }
-                servers["ok"]?.let { jsonParts.add(""""ok":"${it.replace("\"", "\\\"")}"""") }
-                servers["vk"]?.let { jsonParts.add(""""vk":"${it.replace("\"", "\\\"")}"""") }
-                servers["hx"]?.let { jsonParts.add(""""hx":"${it.replace("\"", "\\\"")}"""") }
-                val direct = servers["other"] ?: servers["ss"] ?: servers["dl"] ?: servers["ok"] ?: servers["vk"] ?: servers["hx"]
-                direct?.let { jsonParts.add(""""direct":"${it.replace("\"", "\\\"")}"""") }
-                val dataJson = "{" + jsonParts.joinToString(",") + "}"
+        // 5. NẾU KHÔNG CÓ MANIFEST HOẶC ĐỐI VỚI PHIM CŨ: Quét toàn bộ thẻ <id>...</id> trong trang
+        if (episodes.isEmpty()) {
+            val idBlocks = mutableListOf<String>()
+            Regex("""<id>([\s\S]*?)</id>""").findAll(htmlFull).forEach {
+                idBlocks.add(it.groupValues[1])
+            }
+            if (idBlocks.isEmpty()) {
+                idBlocks.add(mainContent)
+            }
 
-                val epName = if (epMap.size == 1 && (title.contains("FULL", ignoreCase = true) || !title.contains("Tập", ignoreCase = true))) {
-                    "Full Movie (1080p FHD)"
+            val epMap = linkedMapOf<Int, MutableMap<String, String>>()
+
+            for (idBlock in idBlocks) {
+                val sections = idBlock.split(Regex("""\[br/([^\]]+)\]"""))
+                val serverNames = Regex("""\[br/([^\]]+)\]""").findAll(idBlock).map { it.groupValues[1].trim() }.toList()
+
+                val parsedSections = mutableListOf<Pair<String, String>>()
+                if (serverNames.isEmpty()) {
+                    parsedSections.add("Default" to idBlock)
                 } else {
-                    "Tập $epNum"
+                    for (i in serverNames.indices) {
+                        val sName = serverNames[i]
+                        val sContent = sections.getOrNull(i + 1) ?: ""
+                        parsedSections.add(sName to sContent)
+                    }
                 }
 
-                episodes.add(
-                    newEpisode(dataJson) {
-                        this.name = epName
-                        this.episode = epNum
+                for ((sName, sContent) in parsedSections) {
+                    val lowerSName = sName.lowercase()
+                    val buttonMatches = Regex("""\[([^\]|*-\/]+)[|*-]([^\]]+)\]""").findAll(sContent).toList()
+
+                    for (bm in buttonMatches) {
+                        val rawTag = bm.groupValues[1].trim()
+                        val rawUrl = bm.groupValues[2].trim().replace("&amp;", "&")
+                        val lowerTag = rawTag.lowercase()
+                        val lowerUrl = rawUrl.lowercase()
+
+                        val numMatch = Regex("""\d+""").find(rawTag)
+                        val isNumeric = numMatch != null && lowerTag !in listOf("ss", "ok", "vk", "hx", "dl")
+                        val epNum = if (isNumeric) numMatch!!.value.toIntOrNull() ?: 1 else 1
+
+                        if (!epMap.containsKey(epNum)) {
+                            epMap[epNum] = mutableMapOf()
+                        }
+
+                        when {
+                            lowerUrl.contains("ssplay.net") || lowerSName.contains("ss") || lowerTag == "ss" -> {
+                                epMap[epNum]?.put("ss", rawUrl)
+                                val okIdMatch = Regex("""/ok/(\d+)""").find(rawUrl)?.groupValues?.get(1)
+                                if (!okIdMatch.isNullOrEmpty() && epMap[epNum]?.get("ok").isNullOrEmpty()) {
+                                    epMap[epNum]?.put("ok", "https://ok.ru/videoembed/$okIdMatch?autoplay=1")
+                                }
+                            }
+                            lowerUrl.contains("dailymotion.com") || lowerSName.contains("dl") || lowerTag == "dl" -> {
+                                epMap[epNum]?.put("dl", rawUrl)
+                            }
+                            lowerUrl.contains("ok.ru") || lowerSName.contains("ok") || lowerTag == "ok" -> {
+                                epMap[epNum]?.put("ok", rawUrl)
+                            }
+                            lowerUrl.contains("vk.com") || lowerUrl.contains("vkvideo.ru") || lowerSName.contains("vk") || lowerTag == "vk" -> {
+                                epMap[epNum]?.put("vk", rawUrl)
+                            }
+                            lowerUrl.contains("abyssplayer.com") || lowerUrl.contains("abyss") || lowerUrl.contains("hxfile") || lowerUrl.contains("short.icu") || lowerSName.contains("hx") || lowerTag == "hx" -> {
+                                epMap[epNum]?.put("hx", rawUrl)
+                            }
+                            else -> {
+                                if (epMap[epNum]?.get("other").isNullOrEmpty()) {
+                                    epMap[epNum]?.put("other", rawUrl)
+                                }
+                            }
+                        }
                     }
-                )
+                }
             }
-        } else {
-            // Fallback iframe
+
+            if (epMap.isNotEmpty()) {
+                epMap.entries.sortedBy { it.key }.forEach { (epNum, servers) ->
+                    val jsonParts = mutableListOf<String>()
+                    servers["ss"]?.let { jsonParts.add(""""ss":"${it.replace("\"", "\\\"")}"""") }
+                    servers["dl"]?.let { jsonParts.add(""""dl":"${it.replace("\"", "\\\"")}"""") }
+                    servers["ok"]?.let { jsonParts.add(""""ok":"${it.replace("\"", "\\\"")}"""") }
+                    servers["vk"]?.let { jsonParts.add(""""vk":"${it.replace("\"", "\\\"")}"""") }
+                    servers["hx"]?.let { jsonParts.add(""""hx":"${it.replace("\"", "\\\"")}"""") }
+                    val direct = servers["other"] ?: servers["ss"] ?: servers["dl"] ?: servers["ok"] ?: servers["vk"] ?: servers["hx"]
+                    direct?.let { jsonParts.add(""""direct":"${it.replace("\"", "\\\"")}"""") }
+                    val dataJson = "{" + jsonParts.joinToString(",") + "}"
+
+                    val epName = if (epMap.size == 1 && (title.contains("FULL", ignoreCase = true) || !title.contains("Tập", ignoreCase = true))) {
+                        "Full Movie (1080p FHD)"
+                    } else {
+                        "Tập $epNum"
+                    }
+
+                    episodes.add(
+                        newEpisode(dataJson) {
+                            this.name = epName
+                            this.episode = epNum
+                        }
+                    )
+                }
+            }
+        }
+
+        // 6. Fallback cuối cùng: iframe trực tiếp trong trang
+        if (episodes.isEmpty()) {
             val iframes = doc.select("iframe")
             iframes.forEachIndexed { index, iframe ->
                 val src = iframe.attr("src").trim().replace("&amp;", "&")
@@ -486,7 +657,13 @@ class BLVietsubProvider : MainAPI() {
 
         val distinctEpisodes = episodes.distinctBy { it.data }.sortedBy { it.episode }
 
-        return newTvSeriesLoadResponse(title, url, TvType.AsianDrama, distinctEpisodes) {
+        val tvType = if (distinctEpisodes.size <= 1 && (title.contains("FULL", ignoreCase = true) || url.contains("phim-le"))) {
+            TvType.Movie
+        } else {
+            TvType.AsianDrama
+        }
+
+        return newTvSeriesLoadResponse(title, url, tvType, distinctEpisodes) {
             this.posterUrl = poster
             this.plot = description
             this.year = year
@@ -500,6 +677,163 @@ class BLVietsubProvider : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
+        var linkFound = false
+
+        // 1. KIỂM TRA NẾU ĐÂY LÀ TẬP PHIM TỪ HỆ THỐNG BLVIETSUB V19 CLOUD PLAYER
+        if (data.contains(""""v":19""") || data.contains(""""movie_id"""")) {
+            val movieId = Regex(""""movie_id"\s*:\s*"([^"]+)"""").find(data)?.groupValues?.get(1)
+            val pageUrl = Regex(""""page_url"\s*:\s*"([^"]+)"""").find(data)?.groupValues?.get(1)?.replace("\\/", "/")
+            val epLabel = Regex(""""ep_label"\s*:\s*"([^"]+)"""").find(data)?.groupValues?.get(1) ?: "01"
+
+            // Trích xuất các episode ID theo thứ tự ưu tiên: SSPlay -> DL -> OK -> VK -> HX
+            val ssEpId = Regex(""""ss"\s*:\s*"([^"]+)"""").find(data)?.groupValues?.get(1)
+            val dlEpId = Regex(""""dl"\s*:\s*"([^"]+)"""").find(data)?.groupValues?.get(1)
+            val okEpId = Regex(""""ok"\s*:\s*"([^"]+)"""").find(data)?.groupValues?.get(1)
+            val vkEpId = Regex(""""vk"\s*:\s*"([^"]+)"""").find(data)?.groupValues?.get(1)
+            val hxEpId = Regex(""""hx"\s*:\s*"([^"]+)"""").find(data)?.groupValues?.get(1)
+
+            val orderedServers = listOf(
+                "ss" to ssEpId,
+                "dl" to dlEpId,
+                "ok" to okEpId,
+                "vk" to vkEpId,
+                "hx" to hxEpId
+            ).filter { !it.second.isNullOrEmpty() }
+
+            // Thử giải quyết trực tiếp từng server qua API /api/v1/resolve
+            for ((serverKey, targetEpId) in orderedServers) {
+                if (targetEpId.isNullOrEmpty() || movieId.isNullOrEmpty()) continue
+                try {
+                    val resolveRes = app.post(
+                        "$v19Api/api/v1/resolve",
+                        headers = mapOf(
+                            "Content-Type" to "application/json",
+                            "Origin" to mainUrl,
+                            "Referer" to (pageUrl ?: "$mainUrl/"),
+                            "User-Agent" to userAgent
+                        ),
+                        json = mapOf(
+                            "movie_id" to movieId,
+                            "episode_id" to targetEpId
+                        )
+                    ).text
+
+                    if (resolveRes.contains(""""url"""")) {
+                        val resolvedUrl = Regex(""""url"\s*:\s*"([^"]+)"""").find(resolveRes)?.groupValues?.get(1)?.replace("\\/", "/")
+                        if (!resolvedUrl.isNullOrEmpty()) {
+                            when {
+                                resolvedUrl.contains("ssplay.net") -> {
+                                    SSPlayExtractor().getUrl(resolvedUrl, "$mainUrl/", subtitleCallback) {
+                                        linkFound = true
+                                        callback.invoke(it)
+                                    }
+                                }
+                                resolvedUrl.contains("dailymotion.com") -> {
+                                    DailymotionExtractor().getUrl(resolvedUrl, "$mainUrl/", subtitleCallback) {
+                                        linkFound = true
+                                        callback.invoke(it)
+                                    }
+                                }
+                                resolvedUrl.contains("ok.ru") -> {
+                                    OkRuExtractor().getUrl(resolvedUrl, "$mainUrl/", subtitleCallback) {
+                                        linkFound = true
+                                        callback.invoke(it)
+                                    }
+                                }
+                                resolvedUrl.contains("vk.com") || resolvedUrl.contains("vkvideo.ru") -> {
+                                    VkExtractor().getUrl(resolvedUrl, "$mainUrl/", subtitleCallback) {
+                                        linkFound = true
+                                        callback.invoke(it)
+                                    }
+                                }
+                                resolvedUrl.endsWith(".m3u8") || resolvedUrl.contains(".m3u8") -> {
+                                    linkFound = true
+                                    callback.invoke(
+                                        newExtractorLink(
+                                            source = name,
+                                            name = "Server SS (SSPlay) - 1080p FHD",
+                                            url = resolvedUrl,
+                                            type = ExtractorLinkType.M3U8
+                                        ) {
+                                            this.quality = Qualities.P1080.value
+                                            this.referer = "$mainUrl/"
+                                        }
+                                    )
+                                }
+                                else -> {
+                                    loadExtractor(resolvedUrl, "$mainUrl/", subtitleCallback) {
+                                        linkFound = true
+                                        callback.invoke(it)
+                                    }
+                                }
+                            }
+                        }
+                    }
+                } catch (_: Throwable) {}
+            }
+
+            // Nếu Cloudflare Turnstile được bật (PLAY_SESSION_REQUIRED), sử dụng WebViewResolver
+            // để Android WebView tự động chạy script xemvideo & giải mã Turnstile
+            if (!linkFound && !pageUrl.isNullOrEmpty()) {
+                try {
+                    val cleanLabel = Regex("""\d+""").find(epLabel)?.value ?: epLabel
+                    val targetPageHashUrl = if (cleanLabel.length == 1) "$pageUrl#0$cleanLabel" else "$pageUrl#$cleanLabel"
+
+                    val resolver = WebViewResolver(
+                        interceptUrl = Regex("""ssplay\.net|dailymotion\.com|ok\.ru|vkvideo\.ru|vk\.com|abyssplayer\.com|/api/v1/resolve""")
+                    )
+
+                    val webViewResponse = app.get(targetPageHashUrl, interceptor = resolver)
+                    val interceptedUrl = webViewResponse.url
+                    val interceptedBody = webViewResponse.text
+
+                    var streamOrPlayerUrl = ""
+                    if (interceptedBody.contains(""""url"""")) {
+                        streamOrPlayerUrl = Regex(""""url"\s*:\s*"([^"]+)"""").find(interceptedBody)?.groupValues?.get(1)?.replace("\\/", "/") ?: ""
+                    }
+                    if (streamOrPlayerUrl.isEmpty() && (interceptedUrl.contains("ssplay.net") || interceptedUrl.contains("ok.ru") || interceptedUrl.contains("dailymotion.com") || interceptedUrl.contains("vk"))) {
+                        streamOrPlayerUrl = interceptedUrl
+                    }
+
+                    if (streamOrPlayerUrl.isNotEmpty()) {
+                        when {
+                            streamOrPlayerUrl.contains("ssplay.net") -> {
+                                SSPlayExtractor().getUrl(streamOrPlayerUrl, "$mainUrl/", subtitleCallback) {
+                                    linkFound = true
+                                    callback.invoke(it)
+                                }
+                            }
+                            streamOrPlayerUrl.contains("dailymotion.com") -> {
+                                DailymotionExtractor().getUrl(streamOrPlayerUrl, "$mainUrl/", subtitleCallback) {
+                                    linkFound = true
+                                    callback.invoke(it)
+                                }
+                            }
+                            streamOrPlayerUrl.contains("ok.ru") -> {
+                                OkRuExtractor().getUrl(streamOrPlayerUrl, "$mainUrl/", subtitleCallback) {
+                                    linkFound = true
+                                    callback.invoke(it)
+                                }
+                            }
+                            streamOrPlayerUrl.contains("vk") -> {
+                                VkExtractor().getUrl(streamOrPlayerUrl, "$mainUrl/", subtitleCallback) {
+                                    linkFound = true
+                                    callback.invoke(it)
+                                }
+                            }
+                            else -> {
+                                loadExtractor(streamOrPlayerUrl, "$mainUrl/", subtitleCallback) {
+                                    linkFound = true
+                                    callback.invoke(it)
+                                }
+                            }
+                        }
+                    }
+                } catch (_: Throwable) {}
+            }
+        }
+
+        // 2. GIẢI QUYẾT CÁC LINK TRỰC TIẾP (Phim cũ hoặc link có sẵn trong payload)
         val ssUrl = Regex(""""ss"\s*:\s*"([^"]+)"""").find(data)?.groupValues?.get(1)?.replace("\\/", "/")
         val dlUrl = Regex(""""dl"\s*:\s*"([^"]+)"""").find(data)?.groupValues?.get(1)?.replace("\\/", "/")
         val okUrl = Regex(""""ok"\s*:\s*"([^"]+)"""").find(data)?.groupValues?.get(1)?.replace("\\/", "/")
@@ -507,10 +841,8 @@ class BLVietsubProvider : MainAPI() {
         val hxUrl = Regex(""""hx"\s*:\s*"([^"]+)"""").find(data)?.groupValues?.get(1)?.replace("\\/", "/")
         val directUrl = Regex(""""direct"\s*:\s*"([^"]+)"""").find(data)?.groupValues?.get(1)?.replace("\\/", "/")
 
-        var linkFound = false
-
-        // 1. ƯU TIÊN SỐ 1 CAO NHẤT: Phát và hiển thị nguồn SSPlay 1080p FHD đầu tiên
-        if (!ssUrl.isNullOrEmpty()) {
+        // ƯU TIÊN SỐ 1 CAO NHẤT: Phát và hiển thị nguồn SSPlay 1080p FHD lên đầu tiên
+        if (!ssUrl.isNullOrEmpty() && ssUrl.startsWith("http")) {
             try {
                 val ssExtractor = SSPlayExtractor()
                 ssExtractor.getUrl(ssUrl, "$mainUrl/", subtitleCallback) { link ->
@@ -520,8 +852,8 @@ class BLVietsubProvider : MainAPI() {
             } catch (_: Throwable) {}
         }
 
-        // 2. NGUỒN DỰ PHÒNG 1: Server DL (Dailymotion) 1080p FHD
-        if (!dlUrl.isNullOrEmpty()) {
+        // NGUỒN DỰ PHÒNG 1: Server DL (Dailymotion) 1080p FHD
+        if (!dlUrl.isNullOrEmpty() && dlUrl.startsWith("http")) {
             try {
                 if (dlUrl.contains("dailymotion.com")) {
                     val dmExtractor = DailymotionExtractor()
@@ -544,13 +876,13 @@ class BLVietsubProvider : MainAPI() {
             } catch (_: Throwable) {}
         }
 
-        // 3. NGUỒN DỰ PHÒNG 2: Server OK (OK.ru) 1080p FHD
+        // NGUỒN DỰ PHÒNG 2: Server OK (OK.ru) 1080p FHD
         val effectiveOkUrl = okUrl ?: (if (ssUrl?.contains("/ok/") == true) {
             val okId = Regex("""/ok/(\d+)""").find(ssUrl)?.groupValues?.get(1)
             if (!okId.isNullOrEmpty()) "https://ok.ru/videoembed/$okId?autoplay=1" else null
         } else null)
 
-        if (!effectiveOkUrl.isNullOrEmpty() && effectiveOkUrl != dlUrl) {
+        if (!effectiveOkUrl.isNullOrEmpty() && effectiveOkUrl != dlUrl && effectiveOkUrl.startsWith("http")) {
             try {
                 val okExtractor = OkRuExtractor()
                 okExtractor.getUrl(effectiveOkUrl, "$mainUrl/", subtitleCallback) { link ->
@@ -560,8 +892,8 @@ class BLVietsubProvider : MainAPI() {
             } catch (_: Throwable) {}
         }
 
-        // 4. NGUỒN DỰ PHÒNG 3: Server VK 1080p FHD
-        if (!vkUrl.isNullOrEmpty()) {
+        // NGUỒN DỰ PHÒNG 3: Server VK 1080p FHD
+        if (!vkUrl.isNullOrEmpty() && vkUrl.startsWith("http")) {
             try {
                 val vkExtractor = VkExtractor()
                 vkExtractor.getUrl(vkUrl, "$mainUrl/", subtitleCallback) { link ->
@@ -571,9 +903,9 @@ class BLVietsubProvider : MainAPI() {
             } catch (_: Throwable) {}
         }
 
-        // 5. Nguồn dự phòng khác (HX hoặc direct M3U8)
+        // Nguồn dự phòng khác (HX hoặc direct M3U8)
         val backupUrl = directUrl ?: hxUrl
-        if (!backupUrl.isNullOrEmpty() && backupUrl != ssUrl && backupUrl != dlUrl && backupUrl != effectiveOkUrl && backupUrl != vkUrl) {
+        if (!backupUrl.isNullOrEmpty() && backupUrl.startsWith("http") && backupUrl != ssUrl && backupUrl != dlUrl && backupUrl != effectiveOkUrl && backupUrl != vkUrl) {
             try {
                 loadExtractor(backupUrl, "$mainUrl/", subtitleCallback) { link ->
                     linkFound = true
