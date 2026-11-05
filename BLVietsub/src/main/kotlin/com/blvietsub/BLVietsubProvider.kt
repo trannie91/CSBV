@@ -143,21 +143,18 @@ class BLVietsubProvider : MainAPI() {
         val combinedText = "$summary $content"
 
         if (combinedText.isNotEmpty()) {
-            // Check data-image attribute
             val dataImgMatch = Regex("""data-image=['"]([^'"]+)['"]""").find(combinedText)?.groupValues?.get(1)
             if (!dataImgMatch.isNullOrEmpty() && !dataImgMatch.startsWith("data:image")) {
                 val enhanced = enhancePoster(dataImgMatch)
                 if (enhanced.isNotEmpty()) return enhanced
             }
 
-            // Check TMDB url
             val tmdbMatch = Regex("""https://image\.tmdb\.org/t/p/[^\s"'<>]+""").find(combinedText)?.value
             if (!tmdbMatch.isNullOrEmpty()) {
                 val enhanced = enhancePoster(tmdbMatch)
                 if (enhanced.isNotEmpty()) return enhanced
             }
 
-            // Check standard img tags
             val candImgs = Regex("""(?:data-src|data-lazy-src|data-original|src)=['"]([^'"]+)['"]""").findAll(combinedText).map { it.groupValues[1] }
             for (cand in candImgs) {
                 if (!cand.startsWith("data:image") && !cand.contains("blank.gif") && !cand.contains("placeholder")) {
@@ -451,7 +448,6 @@ class BLVietsubProvider : MainAPI() {
 
         // 4. KIỂM TRA HỆ THỐNG BLVIETSUB V19 (Cloud Player manifest API)
         val movieId = Regex("""data-blv-movie=["']([^"']+)["']""").find(htmlFull)?.groupValues?.get(1)
-        var hasV19Manifest = false
 
         if (!movieId.isNullOrEmpty()) {
             try {
@@ -469,10 +465,6 @@ class BLVietsubProvider : MainAPI() {
                 val serversArr = manifestJson.optJSONArray("servers")
 
                 if (serversArr != null && serversArr.length() > 0) {
-                    hasV19Manifest = true
-
-                    // Tập hợp các server theo từng tập phim
-                    // epMap: Map<EpisodeLabel, Map<ServerKey, EpisodeId>>
                     val v19EpMap = linkedMapOf<String, MutableMap<String, String>>()
 
                     for (sIdx in 0 until serversArr.length()) {
@@ -503,7 +495,6 @@ class BLVietsubProvider : MainAPI() {
                         }
                     }
 
-                    // Sắp xếp tập theo thứ tự tăng dần
                     val sortedEntries = v19EpMap.entries.sortedBy { entry ->
                         Regex("""\d+""").find(entry.key)?.value?.toIntOrNull() ?: 999
                     }
@@ -519,7 +510,6 @@ class BLVietsubProvider : MainAPI() {
                             "Tập $label"
                         }
 
-                        // Payload JSON chứa movie_id, label, ep_num và map server IDs
                         val serverParts = sMap.map { "\"${it.key}\":\"${it.value.replace("\"", "\\\"")}\"" }
                         val serversJson = "{" + serverParts.joinToString(",") + "}"
                         val payload = """{"v":19,"movie_id":"$movieId","page_url":"${url.replace("\"", "\\\"")}","ep_num":$epNum,"ep_label":"$label","servers":$serversJson}"""
@@ -685,7 +675,6 @@ class BLVietsubProvider : MainAPI() {
             val pageUrl = Regex(""""page_url"\s*:\s*"([^"]+)"""").find(data)?.groupValues?.get(1)?.replace("\\/", "/")
             val epLabel = Regex(""""ep_label"\s*:\s*"([^"]+)"""").find(data)?.groupValues?.get(1) ?: "01"
 
-            // Trích xuất các episode ID theo thứ tự ưu tiên: SSPlay -> DL -> OK -> VK -> HX
             val ssEpId = Regex(""""ss"\s*:\s*"([^"]+)"""").find(data)?.groupValues?.get(1)
             val dlEpId = Regex(""""dl"\s*:\s*"([^"]+)"""").find(data)?.groupValues?.get(1)
             val okEpId = Regex(""""ok"\s*:\s*"([^"]+)"""").find(data)?.groupValues?.get(1)
@@ -773,17 +762,49 @@ class BLVietsubProvider : MainAPI() {
             }
 
             // Nếu Cloudflare Turnstile được bật (PLAY_SESSION_REQUIRED), sử dụng WebViewResolver
-            // để Android WebView tự động chạy script xemvideo & giải mã Turnstile
+            // với script tự động kích hoạt nút phát tập phim trong WebView
             if (!linkFound && !pageUrl.isNullOrEmpty()) {
                 try {
                     val cleanLabel = Regex("""\d+""").find(epLabel)?.value ?: epLabel
-                    val targetPageHashUrl = if (cleanLabel.length == 1) "$pageUrl#0$cleanLabel" else "$pageUrl#$cleanLabel"
+                    val targetPageUrl = if (cleanLabel.length == 1) "$pageUrl#0$cleanLabel" else "$pageUrl#$cleanLabel"
+
+                    val autoClickScript = """
+                        (function() {
+                            function tryClick() {
+                                var xemBtn = document.querySelector('.xemvideo');
+                                if (xemBtn) xemBtn.click();
+                                var epButtons = document.querySelectorAll('.blv-cloud-player button, .playlst button, button.episode');
+                                if (epButtons.length > 0) {
+                                    var targetLabel = '$cleanLabel';
+                                    var clicked = false;
+                                    for (var i = 0; i < epButtons.length; i++) {
+                                        var btn = epButtons[i];
+                                        if (btn.textContent.trim() === targetLabel || btn.title.includes(targetLabel)) {
+                                            btn.click();
+                                            clicked = true;
+                                            break;
+                                        }
+                                    }
+                                    if (!clicked && epButtons[0]) {
+                                        epButtons[0].click();
+                                    }
+                                } else {
+                                    setTimeout(tryClick, 400);
+                                }
+                            }
+                            if (document.readyState === 'complete' || document.readyState === 'interactive') {
+                                setTimeout(tryClick, 800);
+                            } else {
+                                document.addEventListener('DOMContentLoaded', function() { setTimeout(tryClick, 800); });
+                            }
+                        })();
+                    """.trimIndent()
 
                     val resolver = WebViewResolver(
                         interceptUrl = Regex("""ssplay\.net|dailymotion\.com|ok\.ru|vkvideo\.ru|vk\.com|abyssplayer\.com|/api/v1/resolve""")
                     )
 
-                    val webViewResponse = app.get(targetPageHashUrl, interceptor = resolver)
+                    val webViewResponse = app.get(targetPageUrl, interceptor = resolver)
                     val interceptedUrl = webViewResponse.url
                     val interceptedBody = webViewResponse.text
 
