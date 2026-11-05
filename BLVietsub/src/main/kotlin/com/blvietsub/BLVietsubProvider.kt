@@ -6,6 +6,7 @@ import com.lagradost.cloudstream3.utils.*
 import org.json.JSONObject
 import org.jsoup.Jsoup
 import org.jsoup.nodes.Element
+import java.net.URLDecoder
 import java.net.URLEncoder
 
 class BLVietsubProvider : MainAPI() {
@@ -143,18 +144,21 @@ class BLVietsubProvider : MainAPI() {
         val combinedText = "$summary $content"
 
         if (combinedText.isNotEmpty()) {
+            // Check data-image attribute
             val dataImgMatch = Regex("""data-image=['"]([^'"]+)['"]""").find(combinedText)?.groupValues?.get(1)
             if (!dataImgMatch.isNullOrEmpty() && !dataImgMatch.startsWith("data:image")) {
                 val enhanced = enhancePoster(dataImgMatch)
                 if (enhanced.isNotEmpty()) return enhanced
             }
 
+            // Check TMDB url
             val tmdbMatch = Regex("""https://image\.tmdb\.org/t/p/[^\s"'<>]+""").find(combinedText)?.value
             if (!tmdbMatch.isNullOrEmpty()) {
                 val enhanced = enhancePoster(tmdbMatch)
                 if (enhanced.isNotEmpty()) return enhanced
             }
 
+            // Check standard img tags
             val candImgs = Regex("""(?:data-src|data-lazy-src|data-original|src)=['"]([^'"]+)['"]""").findAll(combinedText).map { it.groupValues[1] }
             for (cand in candImgs) {
                 if (!cand.startsWith("data:image") && !cand.contains("blank.gif") && !cand.contains("placeholder")) {
@@ -465,6 +469,8 @@ class BLVietsubProvider : MainAPI() {
                 val serversArr = manifestJson.optJSONArray("servers")
 
                 if (serversArr != null && serversArr.length() > 0) {
+                    // Tập hợp các server theo từng tập phim
+                    // epMap: Map<EpisodeLabel, Map<ServerKey, EpisodeId>>
                     val v19EpMap = linkedMapOf<String, MutableMap<String, String>>()
 
                     for (sIdx in 0 until serversArr.length()) {
@@ -495,6 +501,7 @@ class BLVietsubProvider : MainAPI() {
                         }
                     }
 
+                    // Sắp xếp tập theo thứ tự tăng dần
                     val sortedEntries = v19EpMap.entries.sortedBy { entry ->
                         Regex("""\d+""").find(entry.key)?.value?.toIntOrNull() ?: 999
                     }
@@ -510,6 +517,7 @@ class BLVietsubProvider : MainAPI() {
                             "Tập $label"
                         }
 
+                        // Payload JSON chứa movie_id, label, ep_num và map server IDs
                         val serverParts = sMap.map { "\"${it.key}\":\"${it.value.replace("\"", "\\\"")}\"" }
                         val serversJson = "{" + serverParts.joinToString(",") + "}"
                         val payload = """{"v":19,"movie_id":"$movieId","page_url":"${url.replace("\"", "\\\"")}","ep_num":$epNum,"ep_label":"$label","servers":$serversJson}"""
@@ -671,187 +679,298 @@ class BLVietsubProvider : MainAPI() {
 
         // 1. KIỂM TRA NẾU ĐÂY LÀ TẬP PHIM TỪ HỆ THỐNG BLVIETSUB V19 CLOUD PLAYER
         if (data.contains(""""v":19""") || data.contains(""""movie_id"""")) {
-            val movieId = Regex(""""movie_id"\s*:\s*"([^"]+)"""").find(data)?.groupValues?.get(1)
-            val pageUrl = Regex(""""page_url"\s*:\s*"([^"]+)"""").find(data)?.groupValues?.get(1)?.replace("\\/", "/")
+            val movieId = Regex(""""movie_id"\s*:\s*"([^"]+)"""").find(data)?.groupValues?.get(1) ?: ""
+            val pageUrl = Regex(""""page_url"\s*:\s*"([^"]+)"""").find(data)?.groupValues?.get(1)?.replace("\\/", "/") ?: ""
             val epLabel = Regex(""""ep_label"\s*:\s*"([^"]+)"""").find(data)?.groupValues?.get(1) ?: "01"
+            val serversJson = Regex(""""servers"\s*:\s*(\{[^}]+\})""").find(data)?.groupValues?.get(1) ?: "{}"
 
-            val ssEpId = Regex(""""ss"\s*:\s*"([^"]+)"""").find(data)?.groupValues?.get(1)
-            val dlEpId = Regex(""""dl"\s*:\s*"([^"]+)"""").find(data)?.groupValues?.get(1)
-            val okEpId = Regex(""""ok"\s*:\s*"([^"]+)"""").find(data)?.groupValues?.get(1)
-            val vkEpId = Regex(""""vk"\s*:\s*"([^"]+)"""").find(data)?.groupValues?.get(1)
-            val hxEpId = Regex(""""hx"\s*:\s*"([^"]+)"""").find(data)?.groupValues?.get(1)
+            val resolvedServerUrls = mutableMapOf<String, String>()
 
-            val orderedServers = listOf(
-                "ss" to ssEpId,
-                "dl" to dlEpId,
-                "ok" to okEpId,
-                "vk" to vkEpId,
-                "hx" to hxEpId
-            ).filter { !it.second.isNullOrEmpty() }
+            // Bước A: Thử gọi trực tiếp /api/v1/resolve nếu phòng khi Turnstile không ép buộc
+            try {
+                val serversObj = JSONObject(serversJson)
+                val keys = serversObj.keys()
+                while (keys.hasNext()) {
+                    val sKey = keys.next()
+                    val targetEpId = serversObj.optString(sKey)
+                    if (targetEpId.isNotEmpty() && movieId.isNotEmpty()) {
+                        val resolveRes = app.post(
+                            "$v19Api/api/v1/resolve",
+                            headers = mapOf(
+                                "Content-Type" to "application/json",
+                                "Origin" to mainUrl,
+                                "Referer" to pageUrl,
+                                "User-Agent" to userAgent
+                            ),
+                            json = mapOf(
+                                "movie_id" to movieId,
+                                "episode_id" to targetEpId
+                            )
+                        ).text
 
-            // Thử giải quyết trực tiếp từng server qua API /api/v1/resolve
-            for ((serverKey, targetEpId) in orderedServers) {
-                if (targetEpId.isNullOrEmpty() || movieId.isNullOrEmpty()) continue
-                try {
-                    val resolveRes = app.post(
-                        "$v19Api/api/v1/resolve",
-                        headers = mapOf(
-                            "Content-Type" to "application/json",
-                            "Origin" to mainUrl,
-                            "Referer" to (pageUrl ?: "$mainUrl/"),
-                            "User-Agent" to userAgent
-                        ),
-                        json = mapOf(
-                            "movie_id" to movieId,
-                            "episode_id" to targetEpId
-                        )
-                    ).text
-
-                    if (resolveRes.contains(""""url"""")) {
-                        val resolvedUrl = Regex(""""url"\s*:\s*"([^"]+)"""").find(resolveRes)?.groupValues?.get(1)?.replace("\\/", "/")
-                        if (!resolvedUrl.isNullOrEmpty()) {
-                            when {
-                                resolvedUrl.contains("ssplay.net") -> {
-                                    SSPlayExtractor().getUrl(resolvedUrl, "$mainUrl/", subtitleCallback) {
-                                        linkFound = true
-                                        callback.invoke(it)
-                                    }
-                                }
-                                resolvedUrl.contains("dailymotion.com") -> {
-                                    DailymotionExtractor().getUrl(resolvedUrl, "$mainUrl/", subtitleCallback) {
-                                        linkFound = true
-                                        callback.invoke(it)
-                                    }
-                                }
-                                resolvedUrl.contains("ok.ru") -> {
-                                    OkRuExtractor().getUrl(resolvedUrl, "$mainUrl/", subtitleCallback) {
-                                        linkFound = true
-                                        callback.invoke(it)
-                                    }
-                                }
-                                resolvedUrl.contains("vk.com") || resolvedUrl.contains("vkvideo.ru") -> {
-                                    VkExtractor().getUrl(resolvedUrl, "$mainUrl/", subtitleCallback) {
-                                        linkFound = true
-                                        callback.invoke(it)
-                                    }
-                                }
-                                resolvedUrl.endsWith(".m3u8") || resolvedUrl.contains(".m3u8") -> {
-                                    linkFound = true
-                                    callback.invoke(
-                                        newExtractorLink(
-                                            source = name,
-                                            name = "Server SS (SSPlay) - 1080p FHD",
-                                            url = resolvedUrl,
-                                            type = ExtractorLinkType.M3U8
-                                        ) {
-                                            this.quality = Qualities.P1080.value
-                                            this.referer = "$mainUrl/"
-                                        }
-                                    )
-                                }
-                                else -> {
-                                    loadExtractor(resolvedUrl, "$mainUrl/", subtitleCallback) {
-                                        linkFound = true
-                                        callback.invoke(it)
-                                    }
-                                }
+                        if (resolveRes.contains(""""url"""")) {
+                            val rUrl = Regex(""""url"\s*:\s*"([^"]+)"""").find(resolveRes)?.groupValues?.get(1)?.replace("\\/", "/")
+                            if (!rUrl.isNullOrEmpty()) {
+                                resolvedServerUrls[sKey] = rUrl
                             }
                         }
                     }
-                } catch (_: Throwable) {}
-            }
+                }
+            } catch (_: Throwable) {}
 
-            // Nếu Cloudflare Turnstile được bật (PLAY_SESSION_REQUIRED), sử dụng WebViewResolver
-            // với script tự động kích hoạt nút phát tập phim trong WebView
-            if (!linkFound && !pageUrl.isNullOrEmpty()) {
+            // Bước B: Nếu chưa lấy đủ nguồn (hoặc gặp PLAY_SESSION_REQUIRED), sử dụng WebViewResolver kèm script tự động hóa
+            if (resolvedServerUrls.isEmpty() && pageUrl.isNotEmpty()) {
                 try {
                     val cleanLabel = Regex("""\d+""").find(epLabel)?.value ?: epLabel
-                    val targetPageUrl = if (cleanLabel.length == 1) "$pageUrl#0$cleanLabel" else "$pageUrl#$cleanLabel"
 
-                    val autoClickScript = """
-                        (function() {
-                            function tryClick() {
-                                var xemBtn = document.querySelector('.xemvideo');
-                                if (xemBtn) xemBtn.click();
-                                var epButtons = document.querySelectorAll('.blv-cloud-player button, .playlst button, button.episode');
-                                if (epButtons.length > 0) {
-                                    var targetLabel = '$cleanLabel';
-                                    var clicked = false;
-                                    for (var i = 0; i < epButtons.length; i++) {
-                                        var btn = epButtons[i];
-                                        if (btn.textContent.trim() === targetLabel || btn.title.includes(targetLabel)) {
-                                            btn.click();
-                                            clicked = true;
-                                            break;
+                    val injectedScript = """
+                    (function() {
+                      try {
+                        Object.defineProperty(document, 'visibilityState', { get: function() { return 'visible'; } });
+                        Object.defineProperty(document, 'hidden', { get: function() { return false; } });
+
+                        var xem = document.querySelector('.xemvideo');
+                        if (xem) xem.click();
+
+                        var mount = document.querySelector('.blv-cloud-player');
+                        if (mount) mount.scrollIntoView();
+
+                        var resolvedMap = {};
+                        var pingDone = false;
+
+                        function notifyKotlin() {
+                          var keys = Object.keys(resolvedMap);
+                          if (keys.length === 0) return;
+                          var q = encodeURIComponent(JSON.stringify(resolvedMap));
+                          var pingUrl = 'https://blv-stream-catch.local/?data=' + q;
+                          try {
+                            var img = new Image();
+                            img.src = pingUrl;
+                          } catch(e) {}
+                          try {
+                            window.location.href = pingUrl;
+                          } catch(e) {}
+                        }
+
+                        // Intercept window.tap
+                        var origTap = window.tap;
+                        window.tap = function(url, mode) {
+                          if (url) {
+                            if (url.indexOf('ssplay.net') !== -1) resolvedMap['ss'] = url;
+                            else if (url.indexOf('dailymotion.com') !== -1 || url.indexOf('dai.ly') !== -1) resolvedMap['dl'] = url;
+                            else if (url.indexOf('ok.ru') !== -1) resolvedMap['ok'] = url;
+                            else if (url.indexOf('vk') !== -1) resolvedMap['vk'] = url;
+                            else resolvedMap['direct'] = url;
+                            notifyKotlin();
+                          }
+                          if (typeof origTap === 'function') origTap(url, mode);
+                        };
+
+                        // Intercept fetch for /api/v1/session and /api/v1/resolve
+                        var targetServers = $serversJson;
+                        var mId = "$movieId";
+                        var origFetch = window.fetch;
+                        window.fetch = function() {
+                          var url = arguments[0];
+                          var p = origFetch.apply(this, arguments);
+                          if (typeof url === 'string') {
+                            if (url.indexOf('/api/v1/session') !== -1) {
+                              p.then(function(r) {
+                                r.clone().json().then(function(sessionData) {
+                                  if (sessionData && sessionData.session_token) {
+                                    var token = sessionData.session_token;
+                                    var serverKeys = Object.keys(targetServers);
+                                    serverKeys.forEach(function(sKey) {
+                                      var epId = targetServers[sKey];
+                                      fetch('https://blvietsub-v19-api.yaoivn.workers.dev/api/v1/resolve', {
+                                        method: 'POST',
+                                        headers: { 'Content-Type': 'application/json' },
+                                        body: JSON.stringify({ movie_id: mId, episode_id: epId, session_token: token })
+                                      }).then(function(r2) { return r2.json(); }).then(function(payload) {
+                                        if (payload && payload.url) {
+                                          resolvedMap[sKey] = payload.url;
+                                          notifyKotlin();
                                         }
-                                    }
-                                    if (!clicked && epButtons[0]) {
-                                        epButtons[0].click();
-                                    }
-                                } else {
-                                    setTimeout(tryClick, 400);
-                                }
+                                      }).catch(function(){});
+                                    });
+                                  }
+                                }).catch(function(){});
+                              });
+                            } else if (url.indexOf('/api/v1/resolve') !== -1) {
+                              p.then(function(r) {
+                                r.clone().json().then(function(payload) {
+                                  if (payload && payload.url) {
+                                    if (payload.url.indexOf('ssplay.net') !== -1) resolvedMap['ss'] = payload.url;
+                                    else if (payload.url.indexOf('dailymotion.com') !== -1 || payload.url.indexOf('dai.ly') !== -1) resolvedMap['dl'] = payload.url;
+                                    else if (payload.url.indexOf('ok.ru') !== -1) resolvedMap['ok'] = payload.url;
+                                    else if (payload.url.indexOf('vk') !== -1) resolvedMap['vk'] = payload.url;
+                                    else resolvedMap['direct'] = payload.url;
+                                    notifyKotlin();
+                                  }
+                                }).catch(function(){});
+                              });
                             }
-                            if (document.readyState === 'complete' || document.readyState === 'interactive') {
-                                setTimeout(tryClick, 800);
-                            } else {
-                                document.addEventListener('DOMContentLoaded', function() { setTimeout(tryClick, 800); });
-                            }
-                        })();
+                          }
+                          return p;
+                        };
+
+                        // Click episode buttons across all servers
+                        function clickButtons() {
+                          var buttons = Array.from(document.querySelectorAll('.episode, button[name="videos"]'));
+                          if (buttons.length === 0) {
+                            setTimeout(clickButtons, 400);
+                            return;
+                          }
+                          var target = "$epLabel";
+                          var clean = "$cleanLabel";
+                          var matches = buttons.filter(function(b) {
+                            var t = b.textContent.trim();
+                            var c = t.replace(/^0+/, '') || t;
+                            return t === target || c === clean || b.getAttribute('title') === 'Tập ' + target || b.getAttribute('title') === 'Tập ' + clean;
+                          });
+                          if (matches.length === 0 && buttons.length > 0) matches = [buttons[0]];
+
+                          matches.forEach(function(btn, i) {
+                            setTimeout(function() { btn.click(); }, i * 600);
+                          });
+                        }
+
+                        setTimeout(clickButtons, 500);
+                      } catch(e) {}
+                    })();
                     """.trimIndent()
 
                     val resolver = WebViewResolver(
-                        interceptUrl = Regex("""ssplay\.net|dailymotion\.com|ok\.ru|vkvideo\.ru|vk\.com|abyssplayer\.com|/api/v1/resolve""")
+                        interceptUrl = Regex("""blv-stream-catch\.local|ssplay\.net/(?:v|ST|SU|ok)/|dailymotion\.com/(?:embed/)?video/|geo\.dailymotion\.com|ok\.ru/videoembed/|vk(?:video)?\.(?:com|ru)/video_ext|\.m3u8"""),
+                        script = injectedScript,
+                        timeout = 25L
                     )
 
-                    val webViewResponse = app.get(targetPageUrl, interceptor = resolver)
+                    val webViewResponse = app.get(pageUrl, interceptor = resolver)
                     val interceptedUrl = webViewResponse.url
-                    val interceptedBody = webViewResponse.text
 
-                    var streamOrPlayerUrl = ""
-                    if (interceptedBody.contains(""""url"""")) {
-                        streamOrPlayerUrl = Regex(""""url"\s*:\s*"([^"]+)"""").find(interceptedBody)?.groupValues?.get(1)?.replace("\\/", "/") ?: ""
-                    }
-                    if (streamOrPlayerUrl.isEmpty() && (interceptedUrl.contains("ssplay.net") || interceptedUrl.contains("ok.ru") || interceptedUrl.contains("dailymotion.com") || interceptedUrl.contains("vk"))) {
-                        streamOrPlayerUrl = interceptedUrl
-                    }
-
-                    if (streamOrPlayerUrl.isNotEmpty()) {
+                    if (interceptedUrl.contains("blv-stream-catch.local")) {
+                        val dataParam = Regex("""[?&]data=([^&#]+)""").find(interceptedUrl)?.groupValues?.get(1)
+                        if (!dataParam.isNullOrEmpty()) {
+                            val decodedJson = URLDecoder.decode(dataParam, "UTF-8")
+                            val jsonMap = JSONObject(decodedJson)
+                            val kIter = jsonMap.keys()
+                            while (kIter.hasNext()) {
+                                val k = kIter.next()
+                                val u = jsonMap.optString(k)
+                                if (u.isNotEmpty() && u.startsWith("http")) {
+                                    resolvedServerUrls[k] = u
+                                }
+                            }
+                        }
+                    } else if (interceptedUrl.startsWith("http") && !interceptedUrl.contains("blvietsub.vip")) {
                         when {
-                            streamOrPlayerUrl.contains("ssplay.net") -> {
-                                SSPlayExtractor().getUrl(streamOrPlayerUrl, "$mainUrl/", subtitleCallback) {
-                                    linkFound = true
-                                    callback.invoke(it)
-                                }
-                            }
-                            streamOrPlayerUrl.contains("dailymotion.com") -> {
-                                DailymotionExtractor().getUrl(streamOrPlayerUrl, "$mainUrl/", subtitleCallback) {
-                                    linkFound = true
-                                    callback.invoke(it)
-                                }
-                            }
-                            streamOrPlayerUrl.contains("ok.ru") -> {
-                                OkRuExtractor().getUrl(streamOrPlayerUrl, "$mainUrl/", subtitleCallback) {
-                                    linkFound = true
-                                    callback.invoke(it)
-                                }
-                            }
-                            streamOrPlayerUrl.contains("vk") -> {
-                                VkExtractor().getUrl(streamOrPlayerUrl, "$mainUrl/", subtitleCallback) {
-                                    linkFound = true
-                                    callback.invoke(it)
-                                }
-                            }
-                            else -> {
-                                loadExtractor(streamOrPlayerUrl, "$mainUrl/", subtitleCallback) {
-                                    linkFound = true
-                                    callback.invoke(it)
-                                }
-                            }
+                            interceptedUrl.contains("ssplay.net") -> resolvedServerUrls["ss"] = interceptedUrl
+                            interceptedUrl.contains("dailymotion.com") || interceptedUrl.contains("dai.ly") -> resolvedServerUrls["dl"] = interceptedUrl
+                            interceptedUrl.contains("ok.ru") -> resolvedServerUrls["ok"] = interceptedUrl
+                            interceptedUrl.contains("vk") -> resolvedServerUrls["vk"] = interceptedUrl
+                            else -> resolvedServerUrls["direct"] = interceptedUrl
                         }
                     }
                 } catch (_: Throwable) {}
             }
+
+            // Bước C: Bóc tách và xuất phát luồng theo đúng thứ tự ưu tiên tuyệt đối
+            val ssUrl = resolvedServerUrls["ss"]
+            val dlUrl = resolvedServerUrls["dl"]
+            val okUrl = resolvedServerUrls["ok"]
+            val vkUrl = resolvedServerUrls["vk"]
+            val directUrl = resolvedServerUrls["direct"] ?: resolvedServerUrls["hx"]
+
+            // 1. ƯU TIÊN SỐ 1 CAO NHẤT: Máy chủ SSPlay 1080p FHD
+            if (!ssUrl.isNullOrEmpty() && ssUrl.startsWith("http")) {
+                try {
+                    val ssExtractor = SSPlayExtractor()
+                    ssExtractor.getUrl(ssUrl, "$mainUrl/", subtitleCallback) { link ->
+                        linkFound = true
+                        callback.invoke(link)
+                    }
+                } catch (_: Throwable) {}
+            }
+
+            // 2. NGUỒN DỰ PHÒNG 1: Server DL (Dailymotion) 1080p FHD
+            if (!dlUrl.isNullOrEmpty() && dlUrl.startsWith("http")) {
+                try {
+                    if (dlUrl.contains("dailymotion.com") || dlUrl.contains("dai.ly")) {
+                        val dmExtractor = DailymotionExtractor()
+                        dmExtractor.getUrl(dlUrl, "$mainUrl/", subtitleCallback) { link ->
+                            linkFound = true
+                            callback.invoke(link)
+                        }
+                    } else if (dlUrl.contains("ok.ru")) {
+                        val okExtractor = OkRuExtractor()
+                        okExtractor.getUrl(dlUrl, "$mainUrl/", subtitleCallback) { link ->
+                            linkFound = true
+                            callback.invoke(link)
+                        }
+                    } else {
+                        loadExtractor(dlUrl, "$mainUrl/", subtitleCallback) { link ->
+                            linkFound = true
+                            callback.invoke(link)
+                        }
+                    }
+                } catch (_: Throwable) {}
+            }
+
+            // 3. NGUỒN DỰ PHÒNG 2: Server OK (OK.ru) 1080p FHD
+            val effectiveOkUrl = okUrl ?: (if (ssUrl?.contains("/ok/") == true) {
+                val okId = Regex("""/ok/(\d+)""").find(ssUrl)?.groupValues?.get(1)
+                if (!okId.isNullOrEmpty()) "https://ok.ru/videoembed/$okId?autoplay=1" else null
+            } else null)
+
+            if (!effectiveOkUrl.isNullOrEmpty() && effectiveOkUrl != dlUrl && effectiveOkUrl.startsWith("http")) {
+                try {
+                    val okExtractor = OkRuExtractor()
+                    okExtractor.getUrl(effectiveOkUrl, "$mainUrl/", subtitleCallback) { link ->
+                        linkFound = true
+                        callback.invoke(link)
+                    }
+                } catch (_: Throwable) {}
+            }
+
+            // 4. NGUỒN DỰ PHÒNG 3: Server VK 1080p FHD
+            if (!vkUrl.isNullOrEmpty() && vkUrl.startsWith("http")) {
+                try {
+                    val vkExtractor = VkExtractor()
+                    vkExtractor.getUrl(vkUrl, "$mainUrl/", subtitleCallback) { link ->
+                        linkFound = true
+                        callback.invoke(link)
+                    }
+                } catch (_: Throwable) {}
+            }
+
+            // 5. Nguồn dự phòng khác (Direct M3U8 hoặc HX)
+            val backupUrl = directUrl
+            if (!backupUrl.isNullOrEmpty() && backupUrl.startsWith("http") && backupUrl != ssUrl && backupUrl != dlUrl && backupUrl != effectiveOkUrl && backupUrl != vkUrl) {
+                try {
+                    if (backupUrl.contains(".m3u8")) {
+                        linkFound = true
+                        callback.invoke(
+                            newExtractorLink(
+                                source = name,
+                                name = "Server SS (SSPlay) - 1080p FHD",
+                                url = backupUrl,
+                                type = ExtractorLinkType.M3U8
+                            ) {
+                                this.quality = Qualities.P1080.value
+                                this.referer = "$mainUrl/"
+                            }
+                        )
+                    } else {
+                        loadExtractor(backupUrl, "$mainUrl/", subtitleCallback) { link ->
+                            linkFound = true
+                            callback.invoke(link)
+                        }
+                    }
+                } catch (_: Throwable) {}
+            }
+
+            if (linkFound) return true
         }
 
         // 2. GIẢI QUYẾT CÁC LINK TRỰC TIẾP (Phim cũ hoặc link có sẵn trong payload)
@@ -876,7 +995,7 @@ class BLVietsubProvider : MainAPI() {
         // NGUỒN DỰ PHÒNG 1: Server DL (Dailymotion) 1080p FHD
         if (!dlUrl.isNullOrEmpty() && dlUrl.startsWith("http")) {
             try {
-                if (dlUrl.contains("dailymotion.com")) {
+                if (dlUrl.contains("dailymotion.com") || dlUrl.contains("dai.ly")) {
                     val dmExtractor = DailymotionExtractor()
                     dmExtractor.getUrl(dlUrl, "$mainUrl/", subtitleCallback) { link ->
                         linkFound = true
