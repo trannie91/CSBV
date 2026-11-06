@@ -679,96 +679,156 @@ class BLVietsubProvider : MainAPI() {
 
         // 1. KIỂM TRA NẾU ĐÂY LÀ TẬP PHIM TỪ HỆ THỐNG BLVIETSUB V19 CLOUD PLAYER
         if (data.contains(""""v":19""") || data.contains(""""movie_id"""")) {
-            val movieId = Regex(""""movie_id"\s*:\s*"([^"]+)"""").find(data)?.groupValues?.get(1) ?: ""
-            val pageUrl = Regex(""""page_url"\s*:\s*"([^"]+)"""").find(data)?.groupValues?.get(1)?.replace("\\/", "/") ?: ""
-            val epLabel = Regex(""""ep_label"\s*:\s*"([^"]+)"""").find(data)?.groupValues?.get(1) ?: "01"
-            val serversJson = Regex(""""servers"\s*:\s*(\{[^}]+\})""").find(data)?.groupValues?.get(1) ?: "{}"
+            val dataJson = try { JSONObject(data) } catch (_: Throwable) { null }
+            val movieId = dataJson?.optString("movie_id")
+                ?: Regex(""""movie_id"\s*:\s*"([^"]+)"""").find(data)?.groupValues?.get(1) ?: ""
+            val pageUrl = dataJson?.optString("page_url")
+                ?: Regex(""""page_url"\s*:\s*"([^"]+)"""").find(data)?.groupValues?.get(1)?.replace("\\/", "/") ?: ""
+            val epLabel = dataJson?.optString("ep_label")
+                ?: Regex(""""ep_label"\s*:\s*"([^"]+)"""").find(data)?.groupValues?.get(1) ?: "01"
+            val serversObj = dataJson?.optJSONObject("servers")
+            val serversJson = serversObj?.toString()
+                ?: Regex(""""servers"\s*:\s*(\{[^}]+\})""").find(data)?.groupValues?.get(1) ?: "{}"
 
             val resolvedServerUrls = mutableMapOf<String, String>()
 
-            // Bước A: Thử gọi trực tiếp /api/v1/resolve nếu phòng khi Turnstile không ép buộc
-            try {
-                val serversObj = JSONObject(serversJson)
-                val keys = serversObj.keys()
-                while (keys.hasNext()) {
-                    val sKey = keys.next()
-                    val targetEpId = serversObj.optString(sKey)
-                    if (targetEpId.isNotEmpty() && movieId.isNotEmpty()) {
-                        val resolveRes = app.post(
-                            "$v19Api/api/v1/resolve",
-                            headers = mapOf(
-                                "Content-Type" to "application/json",
-                                "Origin" to mainUrl,
-                                "Referer" to pageUrl,
-                                "User-Agent" to userAgent
-                            ),
-                            json = mapOf(
-                                "movie_id" to movieId,
-                                "episode_id" to targetEpId
-                            )
-                        ).text
+            // Bước A: Thử gọi trực tiếp /api/v1/resolve phòng khi Turnstile không ép buộc
+            if (serversObj != null && movieId.isNotEmpty()) {
+                try {
+                    val sKeys = serversObj.keys()
+                    while (sKeys.hasNext()) {
+                        val sKey = sKeys.next()
+                        val targetEpId = serversObj.optString(sKey)
+                        if (targetEpId.isNotEmpty()) {
+                            val resolveRes = app.post(
+                                "$v19Api/api/v1/resolve",
+                                headers = mapOf(
+                                    "Content-Type" to "application/json",
+                                    "Origin" to mainUrl,
+                                    "Referer" to pageUrl,
+                                    "User-Agent" to userAgent
+                                ),
+                                json = mapOf(
+                                    "movie_id" to movieId,
+                                    "episode_id" to targetEpId
+                                )
+                            ).text
 
-                        if (resolveRes.contains(""""url"""")) {
-                            val rUrl = Regex(""""url"\s*:\s*"([^"]+)"""").find(resolveRes)?.groupValues?.get(1)?.replace("\\/", "/")
-                            if (!rUrl.isNullOrEmpty()) {
-                                resolvedServerUrls[sKey] = rUrl
+                            if (resolveRes.contains(""""url"""")) {
+                                val rUrl = Regex(""""url"\s*:\s*"([^"]+)"""").find(resolveRes)?.groupValues?.get(1)?.replace("\\/", "/")
+                                if (!rUrl.isNullOrEmpty() && rUrl.startsWith("http")) {
+                                    resolvedServerUrls[sKey] = rUrl
+                                }
                             }
                         }
                     }
-                }
-            } catch (_: Throwable) {}
+                } catch (_: Throwable) {}
+            }
 
-            // Bước B: Nếu chưa lấy đủ nguồn (hoặc gặp PLAY_SESSION_REQUIRED), sử dụng WebViewResolver kèm script tự động hóa
+            // Bước B: Nếu gặp bảo vệ Turnstile, dùng WebViewResolver để vượt rào & bắt trọn tất cả các server
             if (resolvedServerUrls.isEmpty() && pageUrl.isNotEmpty()) {
                 try {
-                    val cleanLabel = Regex("""\d+""").find(epLabel)?.value ?: epLabel
+                    val cleanLabel = Regex("""\d+""").find(epLabel)?.value?.toIntOrNull()?.toString() ?: epLabel
 
                     val injectedScript = """
                     (function() {
                       try {
-                        Object.defineProperty(document, 'visibilityState', { get: function() { return 'visible'; } });
-                        Object.defineProperty(document, 'hidden', { get: function() { return false; } });
+                        try {
+                          Object.defineProperty(navigator, 'webdriver', { get: function() { return undefined; } });
+                        } catch(e) {}
+                        try {
+                          Object.defineProperty(document, 'visibilityState', { get: function() { return 'visible'; } });
+                          Object.defineProperty(document, 'hidden', { get: function() { return false; } });
+                        } catch(e) {}
+                        if (!window.chrome) {
+                          window.chrome = { runtime: {} };
+                        }
 
-                        var xem = document.querySelector('.xemvideo');
-                        if (xem) xem.click();
-
-                        var mount = document.querySelector('.blv-cloud-player');
-                        if (mount) mount.scrollIntoView();
-
+                        var targetServers = $serversJson;
+                        var mId = "$movieId";
+                        var targetLabel = "$epLabel";
+                        var cleanLabel = "$cleanLabel";
                         var resolvedMap = {};
-                        var pingDone = false;
+                        var sessionCaptured = false;
+                        var beaconSent = false;
+                        var resolveInitiated = false;
 
-                        function notifyKotlin() {
+                        function sendBeacon() {
+                          if (beaconSent) return;
                           var keys = Object.keys(resolvedMap);
                           if (keys.length === 0) return;
+                          beaconSent = true;
                           var q = encodeURIComponent(JSON.stringify(resolvedMap));
-                          var pingUrl = 'https://blv-stream-catch.local/?data=' + q;
+                          var beaconUrl = 'https://www.blvietsub.vip/favicon.ico?blv_stream_data=' + q;
                           try {
                             var img = new Image();
-                            img.src = pingUrl;
+                            img.src = beaconUrl;
                           } catch(e) {}
                           try {
-                            window.location.href = pingUrl;
+                            fetch(beaconUrl);
                           } catch(e) {}
                         }
 
-                        // Intercept window.tap
+                        function recordUrl(key, url) {
+                          if (!url || typeof url !== 'string') return;
+                          if (url.indexOf('ssplay.net') !== -1) resolvedMap['ss'] = url;
+                          else if (url.indexOf('dailymotion.com') !== -1 || url.indexOf('dai.ly') !== -1) resolvedMap['dl'] = url;
+                          else if (url.indexOf('ok.ru') !== -1) resolvedMap['ok'] = url;
+                          else if (url.indexOf('vk') !== -1) resolvedMap['vk'] = url;
+                          else if (key && key !== 'direct') resolvedMap[key] = url;
+                          else resolvedMap['direct'] = url;
+                        }
+
+                        function resolveAllServers(token) {
+                          if (resolveInitiated) return;
+                          resolveInitiated = true;
+                          var sKeys = Object.keys(targetServers);
+                          if (sKeys.length === 0) return;
+                          var pending = sKeys.length;
+
+                          sKeys.forEach(function(sKey) {
+                            var epId = targetServers[sKey];
+                            if (!epId) {
+                              pending--;
+                              if (pending <= 0) sendBeacon();
+                              return;
+                            }
+                            fetch('https://blvietsub-v19-api.yaoivn.workers.dev/api/v1/resolve', {
+                              method: 'POST',
+                              headers: { 'Content-Type': 'application/json' },
+                              body: JSON.stringify({ movie_id: mId, episode_id: epId, session_token: token })
+                            })
+                            .then(function(r) { return r.json(); })
+                            .then(function(data) {
+                              if (data && data.url) {
+                                recordUrl(sKey, data.url);
+                              }
+                            })
+                            .catch(function(){})
+                            .finally(function() {
+                              pending--;
+                              if (pending <= 0) {
+                                sendBeacon();
+                              }
+                            });
+                          });
+
+                          setTimeout(function() {
+                            sendBeacon();
+                          }, 2500);
+                        }
+
                         var origTap = window.tap;
                         window.tap = function(url, mode) {
                           if (url) {
-                            if (url.indexOf('ssplay.net') !== -1) resolvedMap['ss'] = url;
-                            else if (url.indexOf('dailymotion.com') !== -1 || url.indexOf('dai.ly') !== -1) resolvedMap['dl'] = url;
-                            else if (url.indexOf('ok.ru') !== -1) resolvedMap['ok'] = url;
-                            else if (url.indexOf('vk') !== -1) resolvedMap['vk'] = url;
-                            else resolvedMap['direct'] = url;
-                            notifyKotlin();
+                            recordUrl(null, url);
+                            setTimeout(function() {
+                              sendBeacon();
+                            }, 1200);
                           }
                           if (typeof origTap === 'function') origTap(url, mode);
                         };
 
-                        // Intercept fetch for /api/v1/session and /api/v1/resolve
-                        var targetServers = $serversJson;
-                        var mId = "$movieId";
                         var origFetch = window.fetch;
                         window.fetch = function() {
                           var url = arguments[0];
@@ -776,36 +836,18 @@ class BLVietsubProvider : MainAPI() {
                           if (typeof url === 'string') {
                             if (url.indexOf('/api/v1/session') !== -1) {
                               p.then(function(r) {
-                                r.clone().json().then(function(sessionData) {
-                                  if (sessionData && sessionData.session_token) {
-                                    var token = sessionData.session_token;
-                                    var serverKeys = Object.keys(targetServers);
-                                    serverKeys.forEach(function(sKey) {
-                                      var epId = targetServers[sKey];
-                                      fetch('https://blvietsub-v19-api.yaoivn.workers.dev/api/v1/resolve', {
-                                        method: 'POST',
-                                        headers: { 'Content-Type': 'application/json' },
-                                        body: JSON.stringify({ movie_id: mId, episode_id: epId, session_token: token })
-                                      }).then(function(r2) { return r2.json(); }).then(function(payload) {
-                                        if (payload && payload.url) {
-                                          resolvedMap[sKey] = payload.url;
-                                          notifyKotlin();
-                                        }
-                                      }).catch(function(){});
-                                    });
+                                r.clone().json().then(function(sData) {
+                                  if (sData && sData.session_token && !sessionCaptured) {
+                                    sessionCaptured = true;
+                                    resolveAllServers(sData.session_token);
                                   }
                                 }).catch(function(){});
                               });
                             } else if (url.indexOf('/api/v1/resolve') !== -1) {
                               p.then(function(r) {
-                                r.clone().json().then(function(payload) {
-                                  if (payload && payload.url) {
-                                    if (payload.url.indexOf('ssplay.net') !== -1) resolvedMap['ss'] = payload.url;
-                                    else if (payload.url.indexOf('dailymotion.com') !== -1 || payload.url.indexOf('dai.ly') !== -1) resolvedMap['dl'] = payload.url;
-                                    else if (payload.url.indexOf('ok.ru') !== -1) resolvedMap['ok'] = payload.url;
-                                    else if (payload.url.indexOf('vk') !== -1) resolvedMap['vk'] = payload.url;
-                                    else resolvedMap['direct'] = payload.url;
-                                    notifyKotlin();
+                                r.clone().json().then(function(rData) {
+                                  if (rData && rData.url) {
+                                    recordUrl(null, rData.url);
                                   }
                                 }).catch(function(){});
                               });
@@ -814,43 +856,56 @@ class BLVietsubProvider : MainAPI() {
                           return p;
                         };
 
-                        // Click episode buttons across all servers
-                        function clickButtons() {
+                        var xem = document.querySelector('.xemvideo');
+                        if (xem) xem.click();
+
+                        var mount = document.querySelector('.blv-cloud-player');
+                        if (mount) mount.scrollIntoView();
+
+                        function clickTargetEpisode() {
                           var buttons = Array.from(document.querySelectorAll('.episode, button[name="videos"]'));
                           if (buttons.length === 0) {
-                            setTimeout(clickButtons, 400);
+                            setTimeout(clickTargetEpisode, 300);
                             return;
                           }
-                          var target = "$epLabel";
-                          var clean = "$cleanLabel";
-                          var matches = buttons.filter(function(b) {
-                            var t = b.textContent.trim();
-                            var c = t.replace(/^0+/, '') || t;
-                            return t === target || c === clean || b.getAttribute('title') === 'Tập ' + target || b.getAttribute('title') === 'Tập ' + clean;
-                          });
-                          if (matches.length === 0 && buttons.length > 0) matches = [buttons[0]];
 
-                          matches.forEach(function(btn, i) {
-                            setTimeout(function() { btn.click(); }, i * 600);
-                          });
+                          var targetBtn = null;
+                          for (var i = 0; i < buttons.length; i++) {
+                            var b = buttons[i];
+                            var txt = b.textContent.trim();
+                            var c = txt.replace(/^0+/, '') || txt;
+                            var title = b.getAttribute('title') || '';
+                            if (txt === targetLabel || c === cleanLabel || title === 'Tập ' + targetLabel || title === 'Tập ' + cleanLabel) {
+                              targetBtn = b;
+                              break;
+                            }
+                          }
+
+                          if (!targetBtn && buttons.length > 0) {
+                            targetBtn = buttons[0];
+                          }
+
+                          if (targetBtn) {
+                            targetBtn.click();
+                          }
                         }
 
-                        setTimeout(clickButtons, 500);
+                        setTimeout(clickTargetEpisode, 600);
                       } catch(e) {}
                     })();
                     """.trimIndent()
 
                     val resolver = WebViewResolver(
-                        interceptUrl = Regex("""blv-stream-catch\.local|ssplay\.net/(?:v|ST|SU|ok)/|dailymotion\.com/(?:embed/)?video/|geo\.dailymotion\.com|ok\.ru/videoembed/|vk(?:video)?\.(?:com|ru)/video_ext|\.m3u8"""),
+                        interceptUrl = Regex("""blv_stream_data=[^&]+|ssplay\.net/(?:v|ST|SU|ok)/|dailymotion\.com/(?:embed/)?video/|geo\.dailymotion\.com|ok\.ru/videoembed/|vk(?:video)?\.(?:com|ru)/video_ext|\.m3u8"""),
                         script = injectedScript,
-                        timeout = 25L
+                        timeout = 30L
                     )
 
                     val webViewResponse = app.get(pageUrl, interceptor = resolver)
                     val interceptedUrl = webViewResponse.url
 
-                    if (interceptedUrl.contains("blv-stream-catch.local")) {
-                        val dataParam = Regex("""[?&]data=([^&#]+)""").find(interceptedUrl)?.groupValues?.get(1)
+                    if (interceptedUrl.contains("blv_stream_data=")) {
+                        val dataParam = Regex("""[?&]blv_stream_data=([^&#]+)""").find(interceptedUrl)?.groupValues?.get(1)
                         if (!dataParam.isNullOrEmpty()) {
                             val decodedJson = URLDecoder.decode(dataParam, "UTF-8")
                             val jsonMap = JSONObject(decodedJson)
