@@ -469,65 +469,105 @@ class BLVietsubProvider : MainAPI() {
                 val serversArr = manifestJson.optJSONArray("servers")
 
                 if (serversArr != null && serversArr.length() > 0) {
-                    // Tập hợp các server theo từng tập phim
-                    // epMap: Map<EpisodeLabel, Map<ServerKey, EpisodeId>>
-                    val v19EpMap = linkedMapOf<String, MutableMap<String, String>>()
+                    val firstServer = serversArr.getJSONObject(0)
+                    val firstServerName = firstServer.optString("name").trim()
+                    val firstServerEps = firstServer.optJSONArray("episodes")
+                    val isFullMovieLayout = serversArr.length() == 1 && (
+                        firstServerName.contains("Full", ignoreCase = true) ||
+                        (firstServerEps != null && (0 until firstServerEps.length()).any { idx ->
+                            val lbl = firstServerEps.getJSONObject(idx).optString("label").uppercase()
+                            lbl in listOf("SS", "OK", "VK", "DL", "HX", "GD")
+                        })
+                    )
 
-                    for (sIdx in 0 until serversArr.length()) {
-                        val sObj = serversArr.getJSONObject(sIdx)
-                        val sName = sObj.optString("name", "Server ${sIdx + 1}")
-                        val sLower = sName.lowercase()
-                        val sKey = when {
-                            sLower.contains("ss") -> "ss"
-                            sLower.contains("dl") || sLower.contains("dailymotion") -> "dl"
-                            sLower.contains("ok") -> "ok"
-                            sLower.contains("vk") -> "vk"
-                            sLower.contains("hx") -> "hx"
-                            sLower.contains("gd") -> "gd"
-                            else -> "s${sIdx + 1}"
-                        }
-
-                        val epsArr = sObj.optJSONArray("episodes") ?: continue
-                        for (eIdx in 0 until epsArr.length()) {
-                            val epObj = epsArr.getJSONObject(eIdx)
+                    if (isFullMovieLayout && firstServerEps != null) {
+                        val fullServerMap = mutableMapOf<String, String>()
+                        for (eIdx in 0 until firstServerEps.length()) {
+                            val epObj = firstServerEps.getJSONObject(eIdx)
                             val epId = epObj.optString("id")
-                            val label = epObj.optString("label").trim()
-                            if (epId.isNotEmpty() && label.isNotEmpty()) {
-                                if (!v19EpMap.containsKey(label)) {
-                                    v19EpMap[label] = mutableMapOf()
-                                }
-                                v19EpMap[label]?.put(sKey, epId)
+                            val lbl = epObj.optString("label").lowercase().trim()
+                            val sKey = when {
+                                lbl.contains("ss") -> "ss"
+                                lbl.contains("dl") || lbl.contains("dailymotion") -> "dl"
+                                lbl.contains("ok") -> "ok"
+                                lbl.contains("vk") -> "vk"
+                                lbl.contains("hx") -> "hx"
+                                lbl.contains("gd") -> "gd"
+                                else -> "s${eIdx + 1}"
+                            }
+                            if (epId.isNotEmpty()) {
+                                fullServerMap[sKey] = epId
                             }
                         }
-                    }
 
-                    // Sắp xếp tập theo thứ tự tăng dần
-                    val sortedEntries = v19EpMap.entries.sortedBy { entry ->
-                        Regex("""\d+""").find(entry.key)?.value?.toIntOrNull() ?: 999
-                    }
-
-                    for (entry in sortedEntries) {
-                        val label = entry.key
-                        val sMap = entry.value
-                        val epNum = Regex("""\d+""").find(label)?.value?.toIntOrNull() ?: 1
-
-                        val epName = if (sortedEntries.size == 1 && (title.contains("FULL", ignoreCase = true) || label.contains("full", ignoreCase = true))) {
-                            "Full Movie (1080p FHD)"
-                        } else {
-                            "Tập $label"
-                        }
-
-                        // Payload JSON chứa movie_id, label, ep_num và map server IDs
-                        val serverParts = sMap.map { "\"${it.key}\":\"${it.value.replace("\"", "\\\"")}\"" }
+                        val serverParts = fullServerMap.map { "\"${it.key}\":\"${it.value.replace("\"", "\\\"")}\"" }
                         val serversJson = "{" + serverParts.joinToString(",") + "}"
-                        val payload = """{"v":19,"movie_id":"$movieId","page_url":"${url.replace("\"", "\\\"")}","ep_num":$epNum,"ep_label":"$label","servers":$serversJson}"""
+                        val payload = """{"v":19,"movie_id":"$movieId","page_url":"${url.replace("\"", "\\\"")}","ep_num":1,"ep_label":"Full","servers":$serversJson}"""
 
                         episodes.add(
                             newEpisode(payload) {
-                                this.name = epName
-                                this.episode = epNum
+                                this.name = "Full Movie (1080p FHD)"
+                                this.episode = 1
                             }
                         )
+                    } else {
+                        // Standard series layout
+                        val v19EpMap = linkedMapOf<String, MutableMap<String, String>>()
+
+                        for (sIdx in 0 until serversArr.length()) {
+                            val sObj = serversArr.getJSONObject(sIdx)
+                            val sName = sObj.optString("name", "Server ${sIdx + 1}")
+                            val sLower = sName.lowercase()
+                            val sKey = when {
+                                sLower.contains("ss") -> "ss"
+                                sLower.contains("dl") || sLower.contains("dailymotion") -> "dl"
+                                sLower.contains("ok") -> "ok"
+                                sLower.contains("vk") -> "vk"
+                                sLower.contains("hx") -> "hx"
+                                sLower.contains("gd") -> "gd"
+                                else -> "s${sIdx + 1}"
+                            }
+
+                            val epsArr = sObj.optJSONArray("episodes") ?: continue
+                            for (eIdx in 0 until epsArr.length()) {
+                                val epObj = epsArr.getJSONObject(eIdx)
+                                val epId = epObj.optString("id")
+                                val label = epObj.optString("label").trim()
+                                if (epId.isNotEmpty() && label.isNotEmpty()) {
+                                    if (!v19EpMap.containsKey(label)) {
+                                        v19EpMap[label] = mutableMapOf()
+                                    }
+                                    v19EpMap[label]?.put(sKey, epId)
+                                }
+                            }
+                        }
+
+                        val sortedEntries = v19EpMap.entries.sortedBy { entry ->
+                            Regex("""\d+""").find(entry.key)?.value?.toIntOrNull() ?: 999
+                        }
+
+                        for (entry in sortedEntries) {
+                            val label = entry.key
+                            val sMap = entry.value
+                            val epNum = Regex("""\d+""").find(label)?.value?.toIntOrNull() ?: 1
+
+                            val epName = if (sortedEntries.size == 1 && (title.contains("FULL", ignoreCase = true) || label.contains("full", ignoreCase = true))) {
+                                "Full Movie (1080p FHD)"
+                            } else {
+                                "Tập $label"
+                            }
+
+                            val serverParts = sMap.map { "\"${it.key}\":\"${it.value.replace("\"", "\\\"")}\"" }
+                            val serversJson = "{" + serverParts.joinToString(",") + "}"
+                            val payload = """{"v":19,"movie_id":"$movieId","page_url":"${url.replace("\"", "\\\"")}","ep_num":$epNum,"ep_label":"$label","servers":$serversJson}"""
+
+                            episodes.add(
+                                newEpisode(payload) {
+                                    this.name = epName
+                                    this.episode = epNum
+                                }
+                            )
+                        }
                     }
                 }
             } catch (_: Throwable) {}
@@ -595,6 +635,9 @@ class BLVietsubProvider : MainAPI() {
                             lowerUrl.contains("vk.com") || lowerUrl.contains("vkvideo.ru") || lowerSName.contains("vk") || lowerTag == "vk" -> {
                                 epMap[epNum]?.put("vk", rawUrl)
                             }
+                            lowerUrl.contains("drive.google.com") || lowerUrl.contains("docs.google.com") || lowerUrl.contains("gdriveplayer") || lowerSName.contains("gd") || lowerTag == "gd" -> {
+                                epMap[epNum]?.put("gd", rawUrl)
+                            }
                             lowerUrl.contains("abyssplayer.com") || lowerUrl.contains("abyss") || lowerUrl.contains("hxfile") || lowerUrl.contains("short.icu") || lowerSName.contains("hx") || lowerTag == "hx" -> {
                                 epMap[epNum]?.put("hx", rawUrl)
                             }
@@ -615,8 +658,9 @@ class BLVietsubProvider : MainAPI() {
                     servers["dl"]?.let { jsonParts.add(""""dl":"${it.replace("\"", "\\\"")}"""") }
                     servers["ok"]?.let { jsonParts.add(""""ok":"${it.replace("\"", "\\\"")}"""") }
                     servers["vk"]?.let { jsonParts.add(""""vk":"${it.replace("\"", "\\\"")}"""") }
+                    servers["gd"]?.let { jsonParts.add(""""gd":"${it.replace("\"", "\\\"")}"""") }
                     servers["hx"]?.let { jsonParts.add(""""hx":"${it.replace("\"", "\\\"")}"""") }
-                    val direct = servers["other"] ?: servers["ss"] ?: servers["dl"] ?: servers["ok"] ?: servers["vk"] ?: servers["hx"]
+                    val direct = servers["other"] ?: servers["ss"] ?: servers["dl"] ?: servers["ok"] ?: servers["vk"] ?: servers["gd"] ?: servers["hx"]
                     direct?.let { jsonParts.add(""""direct":"${it.replace("\"", "\\\"")}"""") }
                     val dataJson = "{" + jsonParts.joinToString(",") + "}"
 
@@ -667,6 +711,85 @@ class BLVietsubProvider : MainAPI() {
             this.year = year
             this.tags = tags
         }
+    }
+
+    private suspend fun extractGoogleDrive(
+        url: String,
+        callback: (ExtractorLink) -> Unit
+    ): Boolean {
+        try {
+            val clean = url.replace("&amp;", "&")
+            val targetUrl = if (clean.contains("gdriveplayer.me") && clean.contains("link=")) {
+                Regex("""link=([^&]+)""").find(clean)?.groupValues?.get(1)?.let { URLDecoder.decode(it, "UTF-8") } ?: clean
+            } else {
+                clean
+            }
+
+            val fileId = Regex("""(?:file/d/|id=|open\?id=)([a-zA-Z0-9_\-]+)""").find(targetUrl)?.groupValues?.get(1)
+                ?: (if (targetUrl.contains("/d/")) targetUrl.split("/d/").getOrNull(1)?.split("/")?.firstOrNull() else null)
+
+            if (!fileId.isNullOrEmpty()) {
+                val directDownload = "https://drive.google.com/uc?id=$fileId&export=download"
+                callback.invoke(
+                    newExtractorLink(
+                        source = name,
+                        name = "Server GD (Google Drive) - 1080p FHD",
+                        url = directDownload,
+                        type = ExtractorLinkType.VIDEO
+                    ) {
+                        this.quality = Qualities.P1080.value
+                        this.referer = "https://drive.google.com/"
+                        this.headers = mapOf(
+                            "User-Agent" to userAgent,
+                            "Referer" to "https://drive.google.com/"
+                        )
+                    }
+                )
+                return true
+            }
+        } catch (_: Throwable) {}
+        return false
+    }
+
+    private suspend fun extractHxServer(
+        url: String,
+        subtitleCallback: (SubtitleFile) -> Unit,
+        callback: (ExtractorLink) -> Unit
+    ): Boolean {
+        try {
+            if (url.contains(".m3u8")) {
+                callback.invoke(
+                    newExtractorLink(
+                        source = name,
+                        name = "Server HX (Abyss) - 1080p FHD",
+                        url = url,
+                        type = ExtractorLinkType.M3U8
+                    ) {
+                        this.quality = Qualities.P1080.value
+                        this.referer = "$mainUrl/"
+                    }
+                )
+                return true
+            }
+
+            val res = app.get(url, headers = mapOf("User-Agent" to userAgent, "Referer" to "$mainUrl/")).text
+            val m3u8Match = Regex("""https?://[^\s"'<>]+\.m3u8[^\s"'<>]*""").find(res)?.value
+            if (!m3u8Match.isNullOrEmpty()) {
+                callback.invoke(
+                    newExtractorLink(
+                        source = name,
+                        name = "Server HX (Abyss) - 1080p FHD",
+                        url = m3u8Match,
+                        type = ExtractorLinkType.M3U8
+                    ) {
+                        this.quality = Qualities.P1080.value
+                        this.referer = url
+                    }
+                )
+                return true
+            }
+        } catch (_: Throwable) {}
+        return false
     }
 
     override suspend fun loadLinks(
@@ -733,15 +856,31 @@ class BLVietsubProvider : MainAPI() {
                     val injectedScript = """
                     (function() {
                       try {
+                        // 1. Gỡ bỏ mọi cờ nhận diện headless / anti-bot cho Cloudflare Turnstile
                         try {
-                          Object.defineProperty(navigator, 'webdriver', { get: function() { return undefined; } });
+                          Object.defineProperty(Navigator.prototype, 'webdriver', { get: function() { return false; }, configurable: true });
+                          Object.defineProperty(navigator, 'webdriver', { get: function() { return false; }, configurable: true });
                         } catch(e) {}
                         try {
-                          Object.defineProperty(document, 'visibilityState', { get: function() { return 'visible'; } });
-                          Object.defineProperty(document, 'hidden', { get: function() { return false; } });
+                          Object.defineProperty(Document.prototype, 'visibilityState', { get: function() { return 'visible'; }, configurable: true });
+                          Object.defineProperty(Document.prototype, 'hidden', { get: function() { return false; }, configurable: true });
+                          Object.defineProperty(document, 'visibilityState', { get: function() { return 'visible'; }, configurable: true });
+                          Object.defineProperty(document, 'hidden', { get: function() { return false; }, configurable: true });
+                          Document.prototype.hasFocus = function() { return true; };
+                          document.hasFocus = function() { return true; };
+                        } catch(e) {}
+                        try {
+                          Object.defineProperty(window, 'innerWidth', { get: function() { return 1920; }, configurable: true });
+                          Object.defineProperty(window, 'innerHeight', { get: function() { return 1080; }, configurable: true });
+                          Object.defineProperty(window, 'outerWidth', { get: function() { return 1920; }, configurable: true });
+                          Object.defineProperty(window, 'outerHeight', { get: function() { return 1080; }, configurable: true });
+                          Object.defineProperty(screen, 'width', { get: function() { return 1920; }, configurable: true });
+                          Object.defineProperty(screen, 'height', { get: function() { return 1080; }, configurable: true });
+                          Object.defineProperty(screen, 'availWidth', { get: function() { return 1920; }, configurable: true });
+                          Object.defineProperty(screen, 'availHeight', { get: function() { return 1080; }, configurable: true });
                         } catch(e) {}
                         if (!window.chrome) {
-                          window.chrome = { runtime: {} };
+                          window.chrome = { runtime: {}, app: {} };
                         }
 
                         var targetServers = $serversJson;
@@ -761,6 +900,9 @@ class BLVietsubProvider : MainAPI() {
                           var q = encodeURIComponent(JSON.stringify(resolvedMap));
                           var beaconUrl = 'https://www.blvietsub.vip/favicon.ico?blv_stream_data=' + q;
                           try {
+                            window.location.href = beaconUrl;
+                          } catch(e) {}
+                          try {
                             var img = new Image();
                             img.src = beaconUrl;
                           } catch(e) {}
@@ -775,6 +917,8 @@ class BLVietsubProvider : MainAPI() {
                           else if (url.indexOf('dailymotion.com') !== -1 || url.indexOf('dai.ly') !== -1) resolvedMap['dl'] = url;
                           else if (url.indexOf('ok.ru') !== -1) resolvedMap['ok'] = url;
                           else if (url.indexOf('vk') !== -1) resolvedMap['vk'] = url;
+                          else if (url.indexOf('drive.google.com') !== -1 || url.indexOf('gdriveplayer') !== -1 || key === 'gd') resolvedMap['gd'] = url;
+                          else if (url.indexOf('short.icu') !== -1 || url.indexOf('abyss') !== -1 || key === 'hx') resolvedMap['hx'] = url;
                           else if (key && key !== 'direct') resolvedMap[key] = url;
                           else resolvedMap['direct'] = url;
                         }
@@ -815,7 +959,7 @@ class BLVietsubProvider : MainAPI() {
 
                           setTimeout(function() {
                             sendBeacon();
-                          }, 2500);
+                          }, 2000);
                         }
 
                         var origTap = window.tap;
@@ -824,7 +968,7 @@ class BLVietsubProvider : MainAPI() {
                             recordUrl(null, url);
                             setTimeout(function() {
                               sendBeacon();
-                            }, 1200);
+                            }, 150);
                           }
                           if (typeof origTap === 'function') origTap(url, mode);
                         };
@@ -857,48 +1001,85 @@ class BLVietsubProvider : MainAPI() {
                         };
 
                         var xem = document.querySelector('.xemvideo');
-                        if (xem) xem.click();
+                        if (xem) {
+                          xem.click();
+                          xem.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
+                        }
 
                         var mount = document.querySelector('.blv-cloud-player');
                         if (mount) mount.scrollIntoView();
 
-                        function clickTargetEpisode() {
-                          var buttons = Array.from(document.querySelectorAll('.episode, button[name="videos"]'));
-                          if (buttons.length === 0) {
-                            setTimeout(clickTargetEpisode, 300);
-                            return;
-                          }
+                        var wrap = document.querySelector('.blv19-turnstile-wrap');
+                        if (wrap) {
+                          wrap.style.cssText = 'position:fixed;top:10px;left:10px;width:320px;height:90px;z-index:999999;display:block !important;visibility:visible !important;opacity:1 !important;';
+                        }
 
-                          var targetBtn = null;
-                          for (var i = 0; i < buttons.length; i++) {
-                            var b = buttons[i];
-                            var txt = b.textContent.trim();
-                            var c = txt.replace(/^0+/, '') || txt;
-                            var title = b.getAttribute('title') || '';
-                            if (txt === targetLabel || c === cleanLabel || title === 'Tập ' + targetLabel || title === 'Tập ' + cleanLabel) {
-                              targetBtn = b;
-                              break;
+                        // Ưu tiên bấm đúng máy chủ: Server SS lên hàng đầu tiên, sau đó DL, OK, VK, GD, HX
+                        function findBestEpisodeButton() {
+                          var headings = Array.from(document.querySelectorAll('.movie-list p.newsv, .playlist p.newsv, p.newsv'));
+                          var serverOrder = ['ss', 'dl', 'ok', 'vk', 'gd', 'hx'];
+                          
+                          for (var s = 0; s < serverOrder.length; s++) {
+                            var key = serverOrder[s];
+                            for (var h = 0; h < headings.length; h++) {
+                              var hTxt = headings[h].textContent.toLowerCase();
+                              if (hTxt.indexOf(key) !== -1 || (key === 'dl' && hTxt.indexOf('dailymotion') !== -1)) {
+                                var nextEl = headings[h].nextElementSibling;
+                                if (nextEl && nextEl.classList.contains('playlst')) {
+                                  var btnCandidates = Array.from(nextEl.querySelectorAll('.episode, button[name="videos"]'));
+                                  for (var b = 0; b < btnCandidates.length; b++) {
+                                    var btn = btnCandidates[b];
+                                    var t = btn.textContent.trim();
+                                    var c = t.replace(/^0+/, '') || t;
+                                    var title = btn.getAttribute('title') || '';
+                                    if (t === targetLabel || c === cleanLabel || title === 'Tập ' + targetLabel || title === 'Tập ' + cleanLabel || targetLabel === 'Full') {
+                                      return btn;
+                                    }
+                                  }
+                                }
+                              }
                             }
                           }
 
-                          if (!targetBtn && buttons.length > 0) {
-                            targetBtn = buttons[0];
+                          // Fallback: Tìm trên toàn bộ danh sách nút
+                          var allButtons = Array.from(document.querySelectorAll('.episode, button[name="videos"]'));
+                          for (var i = 0; i < allButtons.length; i++) {
+                            var ab = allButtons[i];
+                            var atxt = ab.textContent.trim();
+                            var ac = atxt.replace(/^0+/, '') || atxt;
+                            var atitle = ab.getAttribute('title') || '';
+                            if (atxt === targetLabel || ac === cleanLabel || atitle === 'Tập ' + targetLabel || atitle === 'Tập ' + cleanLabel) {
+                              return ab;
+                            }
                           }
 
-                          if (targetBtn) {
-                            targetBtn.click();
-                          }
+                          return allButtons.length > 0 ? allButtons[0] : null;
                         }
 
-                        setTimeout(clickTargetEpisode, 600);
+                        // Polling interval để bấm nút ngay khi manifest tải xong và được render
+                        var clickCount = 0;
+                        var clickInterval = setInterval(function() {
+                          if (beaconSent || sessionCaptured || clickCount > 30) {
+                            clearInterval(clickInterval);
+                            return;
+                          }
+                          clickCount++;
+
+                          var btn = findBestEpisodeButton();
+                          if (btn) {
+                            btn.click();
+                            btn.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
+                          }
+                        }, 250);
+
                       } catch(e) {}
                     })();
                     """.trimIndent()
 
                     val resolver = WebViewResolver(
-                        interceptUrl = Regex("""blv_stream_data=[^&]+|ssplay\.net/(?:v|ST|SU|ok)/|dailymotion\.com/(?:embed/)?video/|geo\.dailymotion\.com|ok\.ru/videoembed/|vk(?:video)?\.(?:com|ru)/video_ext|\.m3u8"""),
+                        interceptUrl = Regex("""blv_stream_data=[^&]+|ssplay\.net|dailymotion\.com|geo\.dailymotion\.com|dai\.ly|ok\.ru|vkvideo\.ru|vk\.com|gdriveplayer|drive\.google\.com|docs\.google\.com|short\.icu|abyss|\.m3u8"""),
                         script = injectedScript,
-                        timeout = 30L
+                        timeout = 25L
                     )
 
                     val webViewResponse = app.get(pageUrl, interceptor = resolver)
@@ -924,6 +1105,8 @@ class BLVietsubProvider : MainAPI() {
                             interceptedUrl.contains("dailymotion.com") || interceptedUrl.contains("dai.ly") -> resolvedServerUrls["dl"] = interceptedUrl
                             interceptedUrl.contains("ok.ru") -> resolvedServerUrls["ok"] = interceptedUrl
                             interceptedUrl.contains("vk") -> resolvedServerUrls["vk"] = interceptedUrl
+                            interceptedUrl.contains("drive.google.com") || interceptedUrl.contains("gdriveplayer") -> resolvedServerUrls["gd"] = interceptedUrl
+                            interceptedUrl.contains("short.icu") || interceptedUrl.contains("abyss") -> resolvedServerUrls["hx"] = interceptedUrl
                             else -> resolvedServerUrls["direct"] = interceptedUrl
                         }
                     }
@@ -935,7 +1118,9 @@ class BLVietsubProvider : MainAPI() {
             val dlUrl = resolvedServerUrls["dl"]
             val okUrl = resolvedServerUrls["ok"]
             val vkUrl = resolvedServerUrls["vk"]
-            val directUrl = resolvedServerUrls["direct"] ?: resolvedServerUrls["hx"]
+            val gdUrl = resolvedServerUrls["gd"]
+            val hxUrl = resolvedServerUrls["hx"]
+            val directUrl = resolvedServerUrls["direct"]
 
             // 1. ƯU TIÊN SỐ 1 CAO NHẤT: Máy chủ SSPlay 1080p FHD
             if (!ssUrl.isNullOrEmpty() && ssUrl.startsWith("http")) {
@@ -999,9 +1184,27 @@ class BLVietsubProvider : MainAPI() {
                 } catch (_: Throwable) {}
             }
 
-            // 5. Nguồn dự phòng khác (Direct M3U8 hoặc HX)
+            // 5. NGUỒN DỰ PHÒNG 4: Server GD (Google Drive) 1080p FHD
+            if (!gdUrl.isNullOrEmpty() && gdUrl.startsWith("http")) {
+                try {
+                    if (extractGoogleDrive(gdUrl, callback)) {
+                        linkFound = true
+                    }
+                } catch (_: Throwable) {}
+            }
+
+            // 6. NGUỒN DỰ PHÒNG 5: Server HX (Abyss) 1080p FHD
+            if (!hxUrl.isNullOrEmpty() && hxUrl.startsWith("http")) {
+                try {
+                    if (extractHxServer(hxUrl, subtitleCallback, callback)) {
+                        linkFound = true
+                    }
+                } catch (_: Throwable) {}
+            }
+
+            // 7. Nguồn dự phòng khác (Direct M3U8 hoặc loadExtractor)
             val backupUrl = directUrl
-            if (!backupUrl.isNullOrEmpty() && backupUrl.startsWith("http") && backupUrl != ssUrl && backupUrl != dlUrl && backupUrl != effectiveOkUrl && backupUrl != vkUrl) {
+            if (!backupUrl.isNullOrEmpty() && backupUrl.startsWith("http") && backupUrl != ssUrl && backupUrl != dlUrl && backupUrl != effectiveOkUrl && backupUrl != vkUrl && backupUrl != gdUrl && backupUrl != hxUrl) {
                 try {
                     if (backupUrl.contains(".m3u8")) {
                         linkFound = true
@@ -1016,6 +1219,10 @@ class BLVietsubProvider : MainAPI() {
                                 this.referer = "$mainUrl/"
                             }
                         )
+                    } else if (backupUrl.contains("drive.google.com") || backupUrl.contains("gdriveplayer")) {
+                        if (extractGoogleDrive(backupUrl, callback)) {
+                            linkFound = true
+                        }
                     } else {
                         loadExtractor(backupUrl, "$mainUrl/", subtitleCallback) { link ->
                             linkFound = true
@@ -1033,6 +1240,7 @@ class BLVietsubProvider : MainAPI() {
         val dlUrl = Regex(""""dl"\s*:\s*"([^"]+)"""").find(data)?.groupValues?.get(1)?.replace("\\/", "/")
         val okUrl = Regex(""""ok"\s*:\s*"([^"]+)"""").find(data)?.groupValues?.get(1)?.replace("\\/", "/")
         val vkUrl = Regex(""""vk"\s*:\s*"([^"]+)"""").find(data)?.groupValues?.get(1)?.replace("\\/", "/")
+        val gdUrl = Regex(""""gd"\s*:\s*"([^"]+)"""").find(data)?.groupValues?.get(1)?.replace("\\/", "/")
         val hxUrl = Regex(""""hx"\s*:\s*"([^"]+)"""").find(data)?.groupValues?.get(1)?.replace("\\/", "/")
         val directUrl = Regex(""""direct"\s*:\s*"([^"]+)"""").find(data)?.groupValues?.get(1)?.replace("\\/", "/")
 
@@ -1098,13 +1306,50 @@ class BLVietsubProvider : MainAPI() {
             } catch (_: Throwable) {}
         }
 
-        // Nguồn dự phòng khác (HX hoặc direct M3U8)
-        val backupUrl = directUrl ?: hxUrl
-        if (!backupUrl.isNullOrEmpty() && backupUrl.startsWith("http") && backupUrl != ssUrl && backupUrl != dlUrl && backupUrl != effectiveOkUrl && backupUrl != vkUrl) {
+        // NGUỒN DỰ PHÒNG 4: Server GD (Google Drive) 1080p FHD
+        if (!gdUrl.isNullOrEmpty() && gdUrl.startsWith("http")) {
             try {
-                loadExtractor(backupUrl, "$mainUrl/", subtitleCallback) { link ->
+                if (extractGoogleDrive(gdUrl, callback)) {
                     linkFound = true
-                    callback.invoke(link)
+                }
+            } catch (_: Throwable) {}
+        }
+
+        // NGUỒN DỰ PHÒNG 5: Server HX (Abyss) 1080p FHD
+        if (!hxUrl.isNullOrEmpty() && hxUrl.startsWith("http")) {
+            try {
+                if (extractHxServer(hxUrl, subtitleCallback, callback)) {
+                    linkFound = true
+                }
+            } catch (_: Throwable) {}
+        }
+
+        // Nguồn dự phòng khác (Direct M3U8 hoặc loadExtractor)
+        val backupUrl = directUrl
+        if (!backupUrl.isNullOrEmpty() && backupUrl.startsWith("http") && backupUrl != ssUrl && backupUrl != dlUrl && backupUrl != effectiveOkUrl && backupUrl != vkUrl && backupUrl != gdUrl && backupUrl != hxUrl) {
+            try {
+                if (backupUrl.contains(".m3u8")) {
+                    linkFound = true
+                    callback.invoke(
+                        newExtractorLink(
+                            source = name,
+                            name = "Server SS (SSPlay) - 1080p FHD",
+                            url = backupUrl,
+                            type = ExtractorLinkType.M3U8
+                        ) {
+                            this.quality = Qualities.P1080.value
+                            this.referer = "$mainUrl/"
+                        }
+                    )
+                } else if (backupUrl.contains("drive.google.com") || backupUrl.contains("gdriveplayer")) {
+                    if (extractGoogleDrive(backupUrl, callback)) {
+                        linkFound = true
+                    }
+                } else {
+                    loadExtractor(backupUrl, "$mainUrl/", subtitleCallback) { link ->
+                        linkFound = true
+                        callback.invoke(link)
+                    }
                 }
             } catch (_: Throwable) {}
         }
