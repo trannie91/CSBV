@@ -1,0 +1,8 @@
+{
+  "name": "CloudBL - BLVietsub",
+  "description": "Kho phim BL - Tuong thich 100% Cloudstream Android TV Box & Mobile.",
+  "manifestVersion": 1,
+  "pluginLists": [
+    "https://raw.githubusercontent.com/trannie91/CSBV/builds/plugins.json"
+  ]
+}

@@ -1,0 +1,24 @@
+[
+    {
+        "iconUrl": "https://www.blvietsub.vip/favicon.ico",
+        "fileHash": "sha256-4fa78cba96537b4afbe5c9a8d5b6cefe27b93a53d15ebd679a287b18eea648a5",
+        "apiVersion": 1,
+        "repositoryUrl": "https://github.com/trannie91/CSBV",
+        "fileSize": 65778,
+        "status": 1,
+        "language": "vi",
+        "authors": [
+            "BLVietsub"
+        ],
+        "tvTypes": [
+            "TvSeries",
+            "Movie",
+            "AsianDrama"
+        ],
+        "version": -1,
+        "internalName": "BLVietsub",
+        "description": "Kho phim BL - T\u01b0\u01a1ng th\u00edch 100% Cloudstream Android TV Box & Mobile.",
+        "url": "https://raw.githubusercontent.com/trannie91/CSBV/builds/BLVietsub.cs3",
+        "name": "BLVietsub"
+    }
+]
