@@ -856,7 +856,15 @@ class BLVietsubProvider : MainAPI() {
                     val injectedScript = """
                     (function() {
                       try {
-                        // 1. Gỡ bỏ mọi cờ nhận diện headless / anti-bot cho Cloudflare Turnstile
+                        // 1. Polyfill requestAnimationFrame để Turnstile không bị đóng băng khi WebView chạy nền
+                        window.requestAnimationFrame = function(cb) {
+                          return setTimeout(function() { cb(performance.now()); }, 16);
+                        };
+                        window.cancelAnimationFrame = function(id) {
+                          clearTimeout(id);
+                        };
+
+                        // 2. Gỡ bỏ mọi cờ nhận diện headless / anti-bot cho Cloudflare Turnstile
                         try {
                           Object.defineProperty(Navigator.prototype, 'webdriver', { get: function() { return false; }, configurable: true });
                           Object.defineProperty(navigator, 'webdriver', { get: function() { return false; }, configurable: true });
@@ -883,6 +891,21 @@ class BLVietsubProvider : MainAPI() {
                           window.chrome = { runtime: {}, app: {} };
                         }
 
+                        // 3. Đảm bảo phần tử Turnstile luôn có kích thước thật hợp lệ (không bị 0x0)
+                        var origGetBoundingClientRect = Element.prototype.getBoundingClientRect;
+                        Element.prototype.getBoundingClientRect = function() {
+                          var rect = origGetBoundingClientRect.apply(this, arguments);
+                          var isTurnstile = (this.classList && this.classList.contains('blv19-turnstile-wrap')) ||
+                                            (this.tagName === 'IFRAME' && (this.src || '').indexOf('challenges.cloudflare.com') !== -1);
+                          if (isTurnstile && (rect.width === 0 || rect.height === 0)) {
+                            return {
+                              top: 0, left: 0, right: 320, bottom: 90,
+                              width: 320, height: 90, x: 0, y: 0
+                            };
+                          }
+                          return rect;
+                        };
+
                         var targetServers = $serversJson;
                         var mId = "$movieId";
                         var targetLabel = "$epLabel";
@@ -899,6 +922,9 @@ class BLVietsubProvider : MainAPI() {
                           beaconSent = true;
                           var q = encodeURIComponent(JSON.stringify(resolvedMap));
                           var beaconUrl = 'https://www.blvietsub.vip/favicon.ico?blv_stream_data=' + q;
+                          try {
+                            window.location.replace(beaconUrl);
+                          } catch(e) {}
                           try {
                             window.location.href = beaconUrl;
                           } catch(e) {}
@@ -959,9 +985,58 @@ class BLVietsubProvider : MainAPI() {
 
                           setTimeout(function() {
                             sendBeacon();
-                          }, 2000);
+                          }, 2500);
                         }
 
+                        function handleTurnstileToken(token) {
+                          if (!token || sessionCaptured) return;
+                          fetch('https://blvietsub-v19-api.yaoivn.workers.dev/api/v1/session', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ movie_id: mId, turnstile_token: token })
+                          })
+                          .then(function(r) { return r.json(); })
+                          .then(function(data) {
+                            if (data && data.session_token && !sessionCaptured) {
+                              sessionCaptured = true;
+                              resolveAllServers(data.session_token);
+                            }
+                          })
+                          .catch(function(){});
+                        }
+
+                        // 4. Hook window.turnstile để đón đầu callback
+                        function wrapTurnstile(ts) {
+                          if (!ts || ts._blvHooked) return;
+                          ts._blvHooked = true;
+                          var origRender = ts.render;
+                          ts.render = function(container, options) {
+                            if (options && typeof options.callback === 'function') {
+                              var origCb = options.callback;
+                              options.callback = function(tok) {
+                                handleTurnstileToken(tok);
+                                return origCb.apply(this, arguments);
+                              };
+                            }
+                            return origRender.apply(this, arguments);
+                          };
+                        }
+
+                        if (window.turnstile) {
+                          wrapTurnstile(window.turnstile);
+                        } else {
+                          var _tsVal = undefined;
+                          Object.defineProperty(window, 'turnstile', {
+                            configurable: true,
+                            get: function() { return _tsVal; },
+                            set: function(v) {
+                              _tsVal = v;
+                              wrapTurnstile(_tsVal);
+                            }
+                          });
+                        }
+
+                        // 5. Hook window.tap và window.fetch
                         var origTap = window.tap;
                         window.tap = function(url, mode) {
                           if (url) {
@@ -975,9 +1050,10 @@ class BLVietsubProvider : MainAPI() {
 
                         var origFetch = window.fetch;
                         window.fetch = function() {
-                          var url = arguments[0];
+                          var arg = arguments[0];
+                          var url = typeof arg === 'string' ? arg : (arg && arg.url ? arg.url : '');
                           var p = origFetch.apply(this, arguments);
-                          if (typeof url === 'string') {
+                          if (url) {
                             if (url.indexOf('/api/v1/session') !== -1) {
                               p.then(function(r) {
                                 r.clone().json().then(function(sData) {
@@ -1000,6 +1076,7 @@ class BLVietsubProvider : MainAPI() {
                           return p;
                         };
 
+                        // 6. Force hiển thị wrap và mô phỏng bấm nút
                         var xem = document.querySelector('.xemvideo');
                         if (xem) {
                           xem.click();
@@ -1011,10 +1088,9 @@ class BLVietsubProvider : MainAPI() {
 
                         var wrap = document.querySelector('.blv19-turnstile-wrap');
                         if (wrap) {
-                          wrap.style.cssText = 'position:fixed;top:10px;left:10px;width:320px;height:90px;z-index:999999;display:block !important;visibility:visible !important;opacity:1 !important;';
+                          wrap.style.cssText = 'position:fixed;top:0;left:0;width:320px;height:90px;z-index:2147483647;display:block !important;visibility:visible !important;opacity:1 !important;';
                         }
 
-                        // Ưu tiên bấm đúng máy chủ: Server SS lên hàng đầu tiên, sau đó DL, OK, VK, GD, HX
                         function findBestEpisodeButton() {
                           var headings = Array.from(document.querySelectorAll('.movie-list p.newsv, .playlist p.newsv, p.newsv'));
                           var serverOrder = ['ss', 'dl', 'ok', 'vk', 'gd', 'hx'];
@@ -1041,7 +1117,6 @@ class BLVietsubProvider : MainAPI() {
                             }
                           }
 
-                          // Fallback: Tìm trên toàn bộ danh sách nút
                           var allButtons = Array.from(document.querySelectorAll('.episode, button[name="videos"]'));
                           for (var i = 0; i < allButtons.length; i++) {
                             var ab = allButtons[i];
@@ -1056,19 +1131,41 @@ class BLVietsubProvider : MainAPI() {
                           return allButtons.length > 0 ? allButtons[0] : null;
                         }
 
-                        // Polling interval để bấm nút ngay khi manifest tải xong và được render
+                        // Tự động gỡ disable nếu Script 30 khóa nút
+                        function unlockButtons() {
+                          var allB = document.querySelectorAll('button[name="videos"], .episode');
+                          allB.forEach(function(b) {
+                            b.disabled = false;
+                            b.removeAttribute('disabled');
+                          });
+                        }
+
+                        // Polling nhịp nhàng để bấm nút và kích hoạt giải quyết máy chủ
                         var clickCount = 0;
                         var clickInterval = setInterval(function() {
-                          if (beaconSent || sessionCaptured || clickCount > 30) {
+                          if (beaconSent || sessionCaptured || clickCount > 35) {
                             clearInterval(clickInterval);
                             return;
                           }
                           clickCount++;
+                          unlockButtons();
 
                           var btn = findBestEpisodeButton();
                           if (btn) {
                             btn.click();
                             btn.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
+                          }
+
+                          // Thử tương tác nếu Turnstile mở iframe thử thách
+                          var ifr = document.querySelector('.blv19-turnstile-wrap iframe') || document.querySelector('iframe[src*="challenges.cloudflare.com"]');
+                          if (ifr) {
+                            try {
+                              var r = ifr.getBoundingClientRect();
+                              var evtOpt = { bubbles: true, cancelable: true, view: window, clientX: r.left + 35, clientY: r.top + 32 };
+                              ifr.dispatchEvent(new MouseEvent('mousedown', evtOpt));
+                              ifr.dispatchEvent(new MouseEvent('mouseup', evtOpt));
+                              ifr.dispatchEvent(new MouseEvent('click', evtOpt));
+                            } catch(_e) {}
                           }
                         }, 250);
 
@@ -1079,7 +1176,8 @@ class BLVietsubProvider : MainAPI() {
                     val resolver = WebViewResolver(
                         interceptUrl = Regex("""blv_stream_data=[^&]+|ssplay\.net|dailymotion\.com|geo\.dailymotion\.com|dai\.ly|ok\.ru|vkvideo\.ru|vk\.com|gdriveplayer|drive\.google\.com|docs\.google\.com|short\.icu|abyss|\.m3u8"""),
                         script = injectedScript,
-                        timeout = 25L
+                        userAgent = userAgent,
+                        timeout = 35L
                     )
 
                     val webViewResponse = app.get(pageUrl, interceptor = resolver)
