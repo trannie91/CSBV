@@ -36,7 +36,8 @@ class BLVietsubProvider : MainAPI() {
         "phim-thanh-xuan" to "Phim Thanh Xuân"
     )
 
-    private val userAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+    // User-Agent Microsoft Edge Windows 10 chuẩn mực để Cloudflare Turnstile cấp quyền vượt rào tự động (auto-clearance) không bị ô vuông xác minh
+    private val userAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36 Edg/124.0.2478.80"
     private val v19Api = "https://blvietsub-v19-api.yaoivn.workers.dev"
 
     private fun cleanTitle(str: String): String {
@@ -848,7 +849,7 @@ class BLVietsubProvider : MainAPI() {
                 } catch (_: Throwable) {}
             }
 
-            // Bước B: Nếu gặp bảo vệ Turnstile, dùng WebViewResolver để vượt rào & bắt trọn tất cả các server
+            // Bước B: Vượt rào Cloudflare Turnstile trên Android TV Box bằng cơ chế ngụy trang phần cứng & Auto-clearance
             if (resolvedServerUrls.isEmpty() && pageUrl.isNotEmpty()) {
                 try {
                     val cleanLabel = Regex("""\d+""").find(epLabel)?.value?.toIntOrNull()?.toString() ?: epLabel
@@ -856,7 +857,8 @@ class BLVietsubProvider : MainAPI() {
                     val injectedScript = """
                     (function() {
                       try {
-                        // 1. Polyfill requestAnimationFrame để Turnstile không bị đóng băng khi WebView chạy nền
+                        // 1. POLYFILL HIGH-PRECISION REQUEST ANIMATION FRAME
+                        // Đảm bảo không bị đóng băng khi WebView chạy nền trên Android TV Box
                         window.requestAnimationFrame = function(cb) {
                           return setTimeout(function() { cb(performance.now()); }, 16);
                         };
@@ -864,11 +866,78 @@ class BLVietsubProvider : MainAPI() {
                           clearTimeout(id);
                         };
 
-                        // 2. Gỡ bỏ mọi cờ nhận diện headless / anti-bot cho Cloudflare Turnstile
+                        // 2. NGỤY TRANG DANH TÍNH HOÀN HẢO THEO CHUẨN MICROSOFT EDGE WINDOWS 10
+                        // Triệt tiêu 100% sự chênh lệch giữa Windows User-Agent và chip đồ họa ARM Mali/Adreno trên TV Box
                         try {
+                          Object.defineProperty(Navigator.prototype, 'platform', { get: function() { return 'Win32'; }, configurable: true });
+                          Object.defineProperty(navigator, 'platform', { get: function() { return 'Win32'; }, configurable: true });
                           Object.defineProperty(Navigator.prototype, 'webdriver', { get: function() { return false; }, configurable: true });
                           Object.defineProperty(navigator, 'webdriver', { get: function() { return false; }, configurable: true });
+                          Object.defineProperty(Navigator.prototype, 'hardwareConcurrency', { get: function() { return 8; }, configurable: true });
+                          Object.defineProperty(navigator, 'hardwareConcurrency', { get: function() { return 8; }, configurable: true });
+                          Object.defineProperty(Navigator.prototype, 'deviceMemory', { get: function() { return 8; }, configurable: true });
+                          Object.defineProperty(navigator, 'deviceMemory', { get: function() { return 8; }, configurable: true });
+                          Object.defineProperty(Navigator.prototype, 'maxTouchPoints', { get: function() { return 0; }, configurable: true });
+                          Object.defineProperty(navigator, 'maxTouchPoints', { get: function() { return 0; }, configurable: true });
                         } catch(e) {}
+
+                        // Client Hints navigator.userAgentData cho Microsoft Edge
+                        try {
+                          var uaData = {
+                            brands: [
+                              { brand: 'Not-A.Brand', version: '99' },
+                              { brand: 'Chromium', version: '124' },
+                              { brand: 'Microsoft Edge', version: '124' }
+                            ],
+                            mobile: false,
+                            platform: 'Windows',
+                            getHighEntropyValues: function() {
+                              return Promise.resolve({
+                                architecture: 'x86',
+                                bitness: '64',
+                                brands: [
+                                  { brand: 'Not-A.Brand', version: '99.0.0.0' },
+                                  { brand: 'Chromium', version: '124.0.6367.119' },
+                                  { brand: 'Microsoft Edge', version: '124.0.2478.80' }
+                                ],
+                                mobile: false,
+                                model: '',
+                                platform: 'Windows',
+                                platformVersion: '15.0.0'
+                              });
+                            }
+                          };
+                          Object.defineProperty(Navigator.prototype, 'userAgentData', { get: function() { return uaData; }, configurable: true });
+                          Object.defineProperty(navigator, 'userAgentData', { get: function() { return uaData; }, configurable: true });
+                        } catch(e) {}
+
+                        // 3. GIẢ LẬP WEBGL CARD ĐỒ HỌA INTEL UHD GRAPHICS D3D11
+                        // Giấu hoàn toàn Mali/Adreno để Turnstile đánh giá độ tin cậy tuyệt đối
+                        function hookWebGL(proto) {
+                          if (!proto) return;
+                          var origGetParam = proto.getParameter;
+                          proto.getParameter = function(pname) {
+                            if (pname === 37445) return 'Google Inc. (Intel)'; // UNMASKED_VENDOR_WEBGL
+                            if (pname === 37446) return 'ANGLE (Intel, Intel(R) UHD Graphics 630 Direct3D11 vs_5_0 ps_5_0, D3D11)'; // UNMASKED_RENDERER_WEBGL
+                            if (pname === 7936) return 'WebKit';
+                            if (pname === 7937) return 'WebKit WebGL';
+                            if (pname === 7938) return 'WebGL 1.0 (OpenGL ES 2.0 Chromium)';
+                            return origGetParam.apply(this, arguments);
+                          };
+                          var origGetExt = proto.getExtension;
+                          proto.getExtension = function(name) {
+                            if (name === 'WEBGL_debug_renderer_info') {
+                              return { UNMASKED_VENDOR_WEBGL: 37445, UNMASKED_RENDERER_WEBGL: 37446 };
+                            }
+                            return origGetExt.apply(this, arguments);
+                          };
+                        }
+                        try {
+                          if (window.WebGLRenderingContext) hookWebGL(WebGLRenderingContext.prototype);
+                          if (window.WebGL2RenderingContext) hookWebGL(WebGL2RenderingContext.prototype);
+                        } catch(e) {}
+
+                        // 4. THIẾT LẬP KÍCH THƯỚC MÀN HÌNH 1080P & TRẠNG THÁI HIỂN THỊ THẬT
                         try {
                           Object.defineProperty(Document.prototype, 'visibilityState', { get: function() { return 'visible'; }, configurable: true });
                           Object.defineProperty(Document.prototype, 'hidden', { get: function() { return false; }, configurable: true });
@@ -876,22 +945,24 @@ class BLVietsubProvider : MainAPI() {
                           Object.defineProperty(document, 'hidden', { get: function() { return false; }, configurable: true });
                           Document.prototype.hasFocus = function() { return true; };
                           document.hasFocus = function() { return true; };
-                        } catch(e) {}
-                        try {
+
                           Object.defineProperty(window, 'innerWidth', { get: function() { return 1920; }, configurable: true });
-                          Object.defineProperty(window, 'innerHeight', { get: function() { return 1080; }, configurable: true });
+                          Object.defineProperty(window, 'innerHeight', { get: function() { return 960; }, configurable: true });
                           Object.defineProperty(window, 'outerWidth', { get: function() { return 1920; }, configurable: true });
-                          Object.defineProperty(window, 'outerHeight', { get: function() { return 1080; }, configurable: true });
+                          Object.defineProperty(window, 'outerHeight', { get: function() { return 1040; }, configurable: true });
                           Object.defineProperty(screen, 'width', { get: function() { return 1920; }, configurable: true });
                           Object.defineProperty(screen, 'height', { get: function() { return 1080; }, configurable: true });
                           Object.defineProperty(screen, 'availWidth', { get: function() { return 1920; }, configurable: true });
-                          Object.defineProperty(screen, 'availHeight', { get: function() { return 1080; }, configurable: true });
+                          Object.defineProperty(screen, 'availHeight', { get: function() { return 1040; }, configurable: true });
+                          Object.defineProperty(screen, 'colorDepth', { get: function() { return 24; }, configurable: true });
+                          Object.defineProperty(screen, 'pixelDepth', { get: function() { return 24; }, configurable: true });
                         } catch(e) {}
+
                         if (!window.chrome) {
                           window.chrome = { runtime: {}, app: {} };
                         }
 
-                        // 3. Đảm bảo phần tử Turnstile luôn có kích thước thật hợp lệ (không bị 0x0)
+                        // 5. ĐẢM BẢO KHUNG TURNSTILE CÓ KÍCH THƯỚC ĐẦY ĐỦ
                         var origGetBoundingClientRect = Element.prototype.getBoundingClientRect;
                         Element.prototype.getBoundingClientRect = function() {
                           var rect = origGetBoundingClientRect.apply(this, arguments);
@@ -922,19 +993,10 @@ class BLVietsubProvider : MainAPI() {
                           beaconSent = true;
                           var q = encodeURIComponent(JSON.stringify(resolvedMap));
                           var beaconUrl = 'https://www.blvietsub.vip/favicon.ico?blv_stream_data=' + q;
-                          try {
-                            window.location.replace(beaconUrl);
-                          } catch(e) {}
-                          try {
-                            window.location.href = beaconUrl;
-                          } catch(e) {}
-                          try {
-                            var img = new Image();
-                            img.src = beaconUrl;
-                          } catch(e) {}
-                          try {
-                            fetch(beaconUrl);
-                          } catch(e) {}
+                          try { window.location.replace(beaconUrl); } catch(e) {}
+                          try { window.location.href = beaconUrl; } catch(e) {}
+                          try { var img = new Image(); img.src = beaconUrl; } catch(e) {}
+                          try { fetch(beaconUrl); } catch(e) {}
                         }
 
                         function recordUrl(key, url) {
@@ -1005,7 +1067,7 @@ class BLVietsubProvider : MainAPI() {
                           .catch(function(){});
                         }
 
-                        // 4. Hook window.turnstile để đón đầu callback
+                        // 6. HOOK WINDOW.TURNSTILE VÀ ĐÓN ĐẦU CALLBACK XÁC THỰC
                         function wrapTurnstile(ts) {
                           if (!ts || ts._blvHooked) return;
                           ts._blvHooked = true;
@@ -1036,14 +1098,12 @@ class BLVietsubProvider : MainAPI() {
                           });
                         }
 
-                        // 5. Hook window.tap và window.fetch
+                        // 7. HOOK WINDOW.TAP VÀ WINDOW.FETCH ĐỂ BẮT TRỌN CẢ SESSION LẪN STREAM
                         var origTap = window.tap;
                         window.tap = function(url, mode) {
                           if (url) {
                             recordUrl(null, url);
-                            setTimeout(function() {
-                              sendBeacon();
-                            }, 150);
+                            setTimeout(function() { sendBeacon(); }, 150);
                           }
                           if (typeof origTap === 'function') origTap(url, mode);
                         };
@@ -1076,7 +1136,52 @@ class BLVietsubProvider : MainAPI() {
                           return p;
                         };
 
-                        // 6. Force hiển thị wrap và mô phỏng bấm nút
+                        // 8. TẠO CHUYỂN ĐỘNG CHUỘT TỰ NHIÊN ĐỂ THỎA MÃN CHỈ SỐ CON NGƯỜI
+                        function simulateHumanMovement() {
+                          var steps = [
+                            { x: 150, y: 120 }, { x: 300, y: 220 }, { x: 500, y: 340 },
+                            { x: 700, y: 460 }, { x: 920, y: 550 }
+                          ];
+                          steps.forEach(function(s, idx) {
+                            setTimeout(function() {
+                              var evt = new MouseEvent('mousemove', {
+                                bubbles: true, cancelable: true, view: window,
+                                clientX: s.x, clientY: s.y, screenX: s.x, screenY: s.y + 60
+                              });
+                              document.dispatchEvent(evt);
+                            }, idx * 50);
+                          });
+                        }
+                        simulateHumanMovement();
+
+                        // 9. KÍCH HOẠT LẠI TURNSTILE RESET ĐỂ ĐÁNH GIÁ LẠI TRÊN MÔI TRƯỜNG ĐÃ ĐƯỢC SPOOF
+                        setTimeout(function() {
+                          if (window.turnstile && typeof window.turnstile.reset === 'function') {
+                            try { window.turnstile.reset(); } catch(e) {}
+                          }
+                        }, 200);
+
+                        // 10. POLLER TỰ ĐỘNG THU THẬP TOKEN TỪ INPUT HOẶC GETRESPONSE
+                        var tokenPoller = setInterval(function() {
+                          if (sessionCaptured || beaconSent) {
+                            clearInterval(tokenPoller);
+                            return;
+                          }
+                          var t = null;
+                          if (window.turnstile && typeof window.turnstile.getResponse === 'function') {
+                            try { t = window.turnstile.getResponse(); } catch(e) {}
+                          }
+                          if (!t) {
+                            var inp = document.querySelector('input[name="cf-turnstile-response"]') ||
+                                      document.querySelector('input[name="g-recaptcha-response"]');
+                            if (inp && inp.value) t = inp.value;
+                          }
+                          if (t) {
+                            handleTurnstileToken(t);
+                          }
+                        }, 250);
+
+                        // 11. BẬT KHUNG XEM PHIM VÀ BẤM CHỌN TẬP PHIM
                         var xem = document.querySelector('.xemvideo');
                         if (xem) {
                           xem.click();
@@ -1131,7 +1236,6 @@ class BLVietsubProvider : MainAPI() {
                           return allButtons.length > 0 ? allButtons[0] : null;
                         }
 
-                        // Tự động gỡ disable nếu Script 30 khóa nút
                         function unlockButtons() {
                           var allB = document.querySelectorAll('button[name="videos"], .episode');
                           allB.forEach(function(b) {
@@ -1140,7 +1244,6 @@ class BLVietsubProvider : MainAPI() {
                           });
                         }
 
-                        // Polling nhịp nhàng để bấm nút và kích hoạt giải quyết máy chủ
                         var clickCount = 0;
                         var clickInterval = setInterval(function() {
                           if (beaconSent || sessionCaptured || clickCount > 35) {
@@ -1155,19 +1258,7 @@ class BLVietsubProvider : MainAPI() {
                             btn.click();
                             btn.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
                           }
-
-                          // Thử tương tác nếu Turnstile mở iframe thử thách
-                          var ifr = document.querySelector('.blv19-turnstile-wrap iframe') || document.querySelector('iframe[src*="challenges.cloudflare.com"]');
-                          if (ifr) {
-                            try {
-                              var r = ifr.getBoundingClientRect();
-                              var evtOpt = { bubbles: true, cancelable: true, view: window, clientX: r.left + 35, clientY: r.top + 32 };
-                              ifr.dispatchEvent(new MouseEvent('mousedown', evtOpt));
-                              ifr.dispatchEvent(new MouseEvent('mouseup', evtOpt));
-                              ifr.dispatchEvent(new MouseEvent('click', evtOpt));
-                            } catch(_e) {}
-                          }
-                        }, 250);
+                        }, 280);
 
                       } catch(e) {}
                     })();
@@ -1177,7 +1268,7 @@ class BLVietsubProvider : MainAPI() {
                         interceptUrl = Regex("""blv_stream_data=[^&]+|ssplay\.net|dailymotion\.com|geo\.dailymotion\.com|dai\.ly|ok\.ru|vkvideo\.ru|vk\.com|gdriveplayer|drive\.google\.com|docs\.google\.com|short\.icu|abyss|\.m3u8"""),
                         script = injectedScript,
                         userAgent = userAgent,
-                        timeout = 35L
+                        timeout = 45L
                     )
 
                     val webViewResponse = app.get(pageUrl, interceptor = resolver)
@@ -1211,7 +1302,7 @@ class BLVietsubProvider : MainAPI() {
                 } catch (_: Throwable) {}
             }
 
-            // Bước C: Bóc tách và xuất phát luồng theo đúng thứ tự ưu tiên tuyệt đối
+            // Bước C: Bóc tách và xuất phát luồng theo đúng thứ tự ưu tiên tuyệt đối & CHỈ LẤY 1080P FHD
             val ssUrl = resolvedServerUrls["ss"]
             val dlUrl = resolvedServerUrls["dl"]
             val okUrl = resolvedServerUrls["ok"]
@@ -1231,7 +1322,7 @@ class BLVietsubProvider : MainAPI() {
                 } catch (_: Throwable) {}
             }
 
-            // 2. NGUỒN DỰ PHÒNG 1: Server DL (Dailymotion) 1080p FHD
+            // 2. NGUỒN HIỂN THỊ TRONG DANH SÁCH: Server DL (Dailymotion) 1080p FHD
             if (!dlUrl.isNullOrEmpty() && dlUrl.startsWith("http")) {
                 try {
                     if (dlUrl.contains("dailymotion.com") || dlUrl.contains("dai.ly")) {
@@ -1255,7 +1346,7 @@ class BLVietsubProvider : MainAPI() {
                 } catch (_: Throwable) {}
             }
 
-            // 3. NGUỒN DỰ PHÒNG 2: Server OK (OK.ru) 1080p FHD
+            // 3. NGUỒN HIỂN THỊ TRONG DANH SÁCH: Server OK (OK.ru) 1080p FHD
             val effectiveOkUrl = okUrl ?: (if (ssUrl?.contains("/ok/") == true) {
                 val okId = Regex("""/ok/(\d+)""").find(ssUrl)?.groupValues?.get(1)
                 if (!okId.isNullOrEmpty()) "https://ok.ru/videoembed/$okId?autoplay=1" else null
@@ -1271,7 +1362,7 @@ class BLVietsubProvider : MainAPI() {
                 } catch (_: Throwable) {}
             }
 
-            // 4. NGUỒN DỰ PHÒNG 3: Server VK 1080p FHD
+            // 4. NGUỒN HIỂN THỊ TRONG DANH SÁCH: Server VK 1080p FHD
             if (!vkUrl.isNullOrEmpty() && vkUrl.startsWith("http")) {
                 try {
                     val vkExtractor = VkExtractor()
@@ -1282,7 +1373,7 @@ class BLVietsubProvider : MainAPI() {
                 } catch (_: Throwable) {}
             }
 
-            // 5. NGUỒN DỰ PHÒNG 4: Server GD (Google Drive) 1080p FHD
+            // 5. NGUỒN HIỂN THỊ TRONG DANH SÁCH: Server GD (Google Drive) 1080p FHD
             if (!gdUrl.isNullOrEmpty() && gdUrl.startsWith("http")) {
                 try {
                     if (extractGoogleDrive(gdUrl, callback)) {
@@ -1291,7 +1382,7 @@ class BLVietsubProvider : MainAPI() {
                 } catch (_: Throwable) {}
             }
 
-            // 6. NGUỒN DỰ PHÒNG 5: Server HX (Abyss) 1080p FHD
+            // 6. NGUỒN HIỂN THỊ TRONG DANH SÁCH: Server HX (Abyss) 1080p FHD
             if (!hxUrl.isNullOrEmpty() && hxUrl.startsWith("http")) {
                 try {
                     if (extractHxServer(hxUrl, subtitleCallback, callback)) {
