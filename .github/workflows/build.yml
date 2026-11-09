@@ -58,15 +58,23 @@ jobs:
       - name: Collect all .cs3 plugins, repo.json and metadata to build folder
         run: |
           mkdir -p ./build
-          # Copy tat ca file .cs3 va plugins.json vao ./build bang lenh GNU cp an toan
+          # Copy tất cả file .cs3 và plugins.json vào ./build an toàn 100%
           find . -maxdepth 4 -name "*.cs3" -exec cp -t ./build/ {} + 2>/dev/null || true
           find . -maxdepth 4 -name "plugins.json" -exec cp -t ./build/ {} + 2>/dev/null || true
-          
-          # Tu dong tao repo.json chuan Cloudstream v4
+
+          # Sửa triệt để lỗi "version": -1 hoặc "version": 1 trên Cloudstream
+          if [ -f "./build/plugins.json" ]; then
+            sed -i 's/"version": -1/"version": 4/g' ./build/plugins.json || true
+            sed -i 's/"version": 1/"version": 4/g' ./build/plugins.json || true
+            sed -i 's/"version": 2/"version": 4/g' ./build/plugins.json || true
+            sed -i 's/"version": 3/"version": 4/g' ./build/plugins.json || true
+          fi
+
+          # Tự động tạo repo.json chuẩn theo cấu trúc Cloudstream v4 nếu chưa có
           cat << 'EOF' > ./build/repo.json
           {
             "name": "CloudBL - BLVietsub",
-            "description": "Kho phim BL - Tuong thich 100% Cloudstream Android TV Box & Mobile.",
+            "description": "Kho phim Mới Cập Nhật - Tương thích 100% Cloudstream Android TV Box & Mobile.",
             "manifestVersion": 1,
             "pluginLists": [
               "https://raw.githubusercontent.com/${{ github.repository }}/builds/plugins.json"
@@ -74,9 +82,18 @@ jobs:
           }
           EOF
 
+          # Xóa bỏ các thư mục báo cáo tạm của Gradle (reports, tmp, intermediates) để nhánh builds luôn sạch sẽ
+          rm -rf ./build/reports ./build/tmp ./build/intermediates ./build/kotlin 2>/dev/null || true
+
+          # Thêm .nojekyll để GitHub Pages / raw không bỏ qua file
           touch ./build/.nojekyll
-          echo "=== Danh sach file trong ./build chuan bi dong goi va xuat ban ==="
+
+          echo "=== Danh sách file trong ./build chuẩn bị đóng gói và xuất bản ==="
           ls -lah ./build
+          if [ -f "./build/plugins.json" ]; then
+            echo "=== Nội dung plugins.json ==="
+            cat ./build/plugins.json
+          fi
 
       - name: Upload Artifacts (Cho phép tải trực tiếp file .cs3 từ GitHub Actions)
         uses: actions/upload-artifact@v4
