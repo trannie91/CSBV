@@ -2,9 +2,11 @@ android {
     namespace = "com.blvietsub"
 }
 
+version = 4
+
 cloudstream {
     authors = listOf("BLVietsub")
-    description = "Kho phim BL - Tương thích 100% Cloudstream Android TV Box & Mobile."
+    description = "Kho phim Mới Cập Nhật - Tương thích 100% Cloudstream Android TV Box & Mobile."
     status = 1
     tvTypes = listOf("TvSeries", "Movie", "AsianDrama")
     language = "vi"
