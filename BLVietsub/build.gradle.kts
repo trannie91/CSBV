@@ -2,7 +2,7 @@ android {
     namespace = "com.blvietsub"
 }
 
-version = 4
+version = 5
 
 cloudstream {
     authors = listOf("BLVietsub")
