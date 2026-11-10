@@ -962,7 +962,25 @@ class BLVietsubProvider : MainAPI() {
                           window.chrome = { runtime: {}, app: {} };
                         }
 
-                        // 5. ĐẢM BẢO KHUNG TURNSTILE CÓ KÍCH THƯỚC ĐẦY ĐỦ
+                        // 5. ĐẢM BẢO KHUNG TURNSTILE CÓ KÍCH THƯỚC ĐẦY ĐỦ VÀ LUÔN NẰM TRONG VIEWPORT
+                        function fixContainers() {
+                          try {
+                            var elements = document.querySelectorAll('.blv19-turnstile-wrap, .blv-cloud-player, [data-blv-movie]');
+                            for (var i = 0; i < elements.length; i++) {
+                              var el = elements[i];
+                              el.style.setProperty('display', 'block', 'important');
+                              el.style.setProperty('visibility', 'visible', 'important');
+                              el.style.setProperty('opacity', '1', 'important');
+                              el.style.setProperty('width', '320px', 'important');
+                              el.style.setProperty('min-width', '320px', 'important');
+                              el.style.setProperty('min-height', '70px', 'important');
+                              el.style.setProperty('height', '90px', 'important');
+                            }
+                          } catch(e) {}
+                        }
+                        fixContainers();
+                        setInterval(fixContainers, 200);
+
                         var origGetBoundingClientRect = Element.prototype.getBoundingClientRect;
                         Element.prototype.getBoundingClientRect = function() {
                           var rect = origGetBoundingClientRect.apply(this, arguments);
@@ -1073,11 +1091,21 @@ class BLVietsubProvider : MainAPI() {
                           ts._blvHooked = true;
                           var origRender = ts.render;
                           ts.render = function(container, options) {
-                            if (options && typeof options.callback === 'function') {
+                            if (options) {
+                              // Ép kích thước normal chuẩn 300x65px tránh lỗi co cụm container 0 width trên TV Box
+                              options.size = 'normal';
+                              options.appearance = 'interaction-only';
+                              if (container && container.style) {
+                                container.style.width = '320px';
+                                container.style.height = '90px';
+                                container.style.display = 'block';
+                                container.style.visibility = 'visible';
+                                container.style.opacity = '1';
+                              }
                               var origCb = options.callback;
                               options.callback = function(tok) {
                                 handleTurnstileToken(tok);
-                                return origCb.apply(this, arguments);
+                                if (typeof origCb === 'function') origCb.apply(this, arguments);
                               };
                             }
                             return origRender.apply(this, arguments);
@@ -1128,6 +1156,7 @@ class BLVietsubProvider : MainAPI() {
                                 r.clone().json().then(function(rData) {
                                   if (rData && rData.url) {
                                     recordUrl(null, rData.url);
+                                    setTimeout(function() { sendBeacon(); }, 300);
                                   }
                                 }).catch(function(){});
                               });
@@ -1136,30 +1165,35 @@ class BLVietsubProvider : MainAPI() {
                           return p;
                         };
 
-                        // 8. TẠO CHUYỂN ĐỘNG CHUỘT TỰ NHIÊN ĐỂ THỎA MÃN CHỈ SỐ CON NGƯỜI
+                        // 8. TẠO CHUYỂN ĐỘNG CHUỘT VÀ TƯƠNG TÁC TỰ NHIÊN ĐỂ THỎA MÃN CHỈ SỐ CON NGƯỜI
                         function simulateHumanMovement() {
                           var steps = [
-                            { x: 150, y: 120 }, { x: 300, y: 220 }, { x: 500, y: 340 },
-                            { x: 700, y: 460 }, { x: 920, y: 550 }
+                            { x: 50, y: 35 }, { x: 100, y: 40 }, { x: 150, y: 35 },
+                            { x: 200, y: 40 }, { x: 300, y: 50 }, { x: 500, y: 150 }
                           ];
                           steps.forEach(function(s, idx) {
                             setTimeout(function() {
-                              var evt = new MouseEvent('mousemove', {
-                                bubbles: true, cancelable: true, view: window,
-                                clientX: s.x, clientY: s.y, screenX: s.x, screenY: s.y + 60
+                              ['pointermove', 'mousemove', 'pointerdown', 'mousedown', 'pointerup', 'mouseup', 'click'].forEach(function(etype) {
+                                var evt = new MouseEvent(etype, {
+                                  bubbles: true, cancelable: true, view: window,
+                                  clientX: s.x, clientY: s.y, screenX: s.x, screenY: s.y + 60
+                                });
+                                document.dispatchEvent(evt);
+                                var wrapEl = document.querySelector('.blv19-turnstile-wrap');
+                                if (wrapEl) wrapEl.dispatchEvent(evt);
                               });
-                              document.dispatchEvent(evt);
-                            }, idx * 50);
+                            }, idx * 100);
                           });
                         }
                         simulateHumanMovement();
+                        setInterval(simulateHumanMovement, 1200);
 
                         // 9. KÍCH HOẠT LẠI TURNSTILE RESET ĐỂ ĐÁNH GIÁ LẠI TRÊN MÔI TRƯỜNG ĐÃ ĐƯỢC SPOOF
                         setTimeout(function() {
                           if (window.turnstile && typeof window.turnstile.reset === 'function') {
                             try { window.turnstile.reset(); } catch(e) {}
                           }
-                        }, 200);
+                        }, 250);
 
                         // 10. POLLER TỰ ĐỘNG THU THẬP TOKEN TỪ INPUT HOẶC GETRESPONSE
                         var tokenPoller = setInterval(function() {
@@ -1179,10 +1213,10 @@ class BLVietsubProvider : MainAPI() {
                           if (t) {
                             handleTurnstileToken(t);
                           }
-                        }, 250);
+                        }, 200);
 
                         // 11. BẬT KHUNG XEM PHIM VÀ BẤM CHỌN TẬP PHIM
-                        var xem = document.querySelector('.xemvideo');
+                        var xem = document.querySelector('.xemvideo, #xemvideo, a.bwac-btn');
                         if (xem) {
                           xem.click();
                           xem.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
@@ -1258,7 +1292,7 @@ class BLVietsubProvider : MainAPI() {
                             btn.click();
                             btn.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
                           }
-                        }, 280);
+                        }, 300);
 
                       } catch(e) {}
                     })();
@@ -1266,8 +1300,19 @@ class BLVietsubProvider : MainAPI() {
 
                     val resolver = WebViewResolver(
                         interceptUrl = Regex("""blv_stream_data=[^&]+|ssplay\.net|dailymotion\.com|geo\.dailymotion\.com|dai\.ly|ok\.ru|vkvideo\.ru|vk\.com|gdriveplayer|drive\.google\.com|docs\.google\.com|short\.icu|abyss|\.m3u8"""),
+                        additionalUrls = listOf(
+                            Regex("""blv_stream_data=[^&]+"""),
+                            Regex("""ssplay\.net"""),
+                            Regex("""dailymotion\.com|dai\.ly"""),
+                            Regex("""ok\.ru"""),
+                            Regex("""vkvideo\.ru|vk\.com"""),
+                            Regex("""gdriveplayer|drive\.google\.com"""),
+                            Regex("""short\.icu|abyss"""),
+                            Regex("""\.m3u8""")
+                        ),
                         script = injectedScript,
                         userAgent = userAgent,
+                        useOkhttp = false,
                         timeout = 45L
                     )
 
