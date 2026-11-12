@@ -817,25 +817,8 @@ class BLVietsubProvider : MainAPI() {
               || link.name.contains("144p", ignoreCase = true)
 
             if (!isBelow1080) {
-                val formattedName = if (!link.name.contains("1080p", ignoreCase = true) && !link.name.contains("FHD", ignoreCase = true)) {
-                    "${link.name} - 1080p FHD"
-                } else {
-                    link.name
-                }
-
                 linkFound = true
-                callback.invoke(
-                    newExtractorLink(
-                        source = link.source,
-                        name = formattedName,
-                        url = link.url,
-                        type = link.type
-                    ) {
-                        this.quality = Qualities.P1080.value
-                        this.referer = link.referer ?: "$mainUrl/"
-                        this.headers = link.headers
-                    }
-                )
+                callback.invoke(link)
             }
         }
 
