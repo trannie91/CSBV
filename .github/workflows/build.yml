@@ -64,11 +64,12 @@ jobs:
 
           # Sửa triệt để lỗi "version": -1 hoặc "version": 1 trên Cloudstream
           if [ -f "./build/plugins.json" ]; then
-            sed -i 's/"version": -1/"version": 5/g' ./build/plugins.json || true
-            sed -i 's/"version": 1/"version": 5/g' ./build/plugins.json || true
-            sed -i 's/"version": 2/"version": 5/g' ./build/plugins.json || true
-            sed -i 's/"version": 3/"version": 5/g' ./build/plugins.json || true
-            sed -i 's/"version": 4/"version": 5/g' ./build/plugins.json || true
+            sed -i 's/"version": -1/"version": 6/g' ./build/plugins.json || true
+            sed -i 's/"version": 1/"version": 6/g' ./build/plugins.json || true
+            sed -i 's/"version": 2/"version": 6/g' ./build/plugins.json || true
+            sed -i 's/"version": 3/"version": 6/g' ./build/plugins.json || true
+            sed -i 's/"version": 4/"version": 6/g' ./build/plugins.json || true
+            sed -i 's/"version": 5/"version": 6/g' ./build/plugins.json || true
           fi
 
           # Tự động tạo repo.json chuẩn theo cấu trúc Cloudstream v4 nếu chưa có
