@@ -2,7 +2,7 @@
   "name": "BLVietsub",
   "pluginClassName": "com.blvietsub.BLVietsubPlugin",
   "description": "Kho phim Mới Cập Nhật - Tương thích 100% Cloudstream Android TV Box & Mobile.",
-  "version": 5,
+  "version": 6,
   "author": "BLVietsub",
   "tvTypes": ["TvSeries", "Movie", "AsianDrama"],
   "iconUrl": "https://www.blvietsub.vip/favicon.ico",
