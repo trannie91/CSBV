@@ -1,0 +1,24 @@
+[
+    {
+        "iconUrl": "https://www.blvietsub.vip/favicon.ico",
+        "fileHash": "sha256-46ef1e9a2110649f8b58a6f872a9253c4d8b18f2ac18fd368c38c725eda11033",
+        "apiVersion": 1,
+        "repositoryUrl": "https://github.com/trannie91/CSBV",
+        "fileSize": 66311,
+        "status": 1,
+        "language": "vi",
+        "authors": [
+            "BLVietsub"
+        ],
+        "tvTypes": [
+            "TvSeries",
+            "Movie",
+            "AsianDrama"
+        ],
+        "version": 6,
+        "internalName": "BLVietsub",
+        "description": "Kho phim M\u1edbi C\u1eadp Nh\u1eadt - T\u01b0\u01a1ng th\u00edch 100% Cloudstream Android TV Box & Mobile.",
+        "url": "https://raw.githubusercontent.com/trannie91/CSBV/builds/BLVietsub.cs3",
+        "name": "BLVietsub"
+    }
+]
