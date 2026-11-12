@@ -801,6 +801,44 @@ class BLVietsubProvider : MainAPI() {
     ): Boolean {
         var linkFound = false
 
+        // Bộ lọc nghiêm ngặt CHỈ LẤY LINK 1080P FHD - LOẠI BỎ TOÀN BỘ CÁC ĐỘ PHÂN GIẢI THẤP HƠN 1080P (< 1080p)
+        val fhdCallback: (ExtractorLink) -> Unit = { link ->
+            val q = link.quality
+            val isBelow1080 = q in listOf(
+                Qualities.P144.value,
+                Qualities.P240.value,
+                Qualities.P360.value,
+                Qualities.P480.value,
+                Qualities.P720.value
+            ) || link.name.contains("720p", ignoreCase = true)
+              || link.name.contains("480p", ignoreCase = true)
+              || link.name.contains("360p", ignoreCase = true)
+              || link.name.contains("240p", ignoreCase = true)
+              || link.name.contains("144p", ignoreCase = true)
+
+            if (!isBelow1080) {
+                val formattedName = if (!link.name.contains("1080p", ignoreCase = true) && !link.name.contains("FHD", ignoreCase = true)) {
+                    "${link.name} - 1080p FHD"
+                } else {
+                    link.name
+                }
+
+                linkFound = true
+                callback.invoke(
+                    newExtractorLink(
+                        source = link.source,
+                        name = formattedName,
+                        url = link.url,
+                        type = link.type
+                    ) {
+                        this.quality = Qualities.P1080.value
+                        this.referer = link.referer ?: "$mainUrl/"
+                        this.headers = link.headers
+                    }
+                )
+            }
+        }
+
         // 1. KIỂM TRA NẾU ĐÂY LÀ TẬP PHIM TỪ HỆ THỐNG BLVIETSUB V19 CLOUD PLAYER
         if (data.contains(""""v":19""") || data.contains(""""movie_id"""")) {
             val dataJson = try { JSONObject(data) } catch (_: Throwable) { null }
@@ -1313,7 +1351,7 @@ class BLVietsubProvider : MainAPI() {
                         script = injectedScript,
                         userAgent = userAgent,
                         useOkhttp = false,
-                        timeout = 45L
+                        timeout = 60_000L
                     )
 
                     val webViewResponse = app.get(pageUrl, interceptor = resolver)
@@ -1356,14 +1394,11 @@ class BLVietsubProvider : MainAPI() {
             val hxUrl = resolvedServerUrls["hx"]
             val directUrl = resolvedServerUrls["direct"]
 
-            // 1. ƯU TIÊN SỐ 1 CAO NHẤT: Máy chủ SSPlay 1080p FHD
+            // 1. ƯU TIÊN SỐ 1 CAO NHẤT: Máy chủ SSPlay 1080p FHD (Hiển thị đầu tiên)
             if (!ssUrl.isNullOrEmpty() && ssUrl.startsWith("http")) {
                 try {
                     val ssExtractor = SSPlayExtractor()
-                    ssExtractor.getUrl(ssUrl, "$mainUrl/", subtitleCallback) { link ->
-                        linkFound = true
-                        callback.invoke(link)
-                    }
+                    ssExtractor.getUrl(ssUrl, "$mainUrl/", subtitleCallback, fhdCallback)
                 } catch (_: Throwable) {}
             }
 
@@ -1372,21 +1407,12 @@ class BLVietsubProvider : MainAPI() {
                 try {
                     if (dlUrl.contains("dailymotion.com") || dlUrl.contains("dai.ly")) {
                         val dmExtractor = DailymotionExtractor()
-                        dmExtractor.getUrl(dlUrl, "$mainUrl/", subtitleCallback) { link ->
-                            linkFound = true
-                            callback.invoke(link)
-                        }
+                        dmExtractor.getUrl(dlUrl, "$mainUrl/", subtitleCallback, fhdCallback)
                     } else if (dlUrl.contains("ok.ru")) {
                         val okExtractor = OkRuExtractor()
-                        okExtractor.getUrl(dlUrl, "$mainUrl/", subtitleCallback) { link ->
-                            linkFound = true
-                            callback.invoke(link)
-                        }
+                        okExtractor.getUrl(dlUrl, "$mainUrl/", subtitleCallback, fhdCallback)
                     } else {
-                        loadExtractor(dlUrl, "$mainUrl/", subtitleCallback) { link ->
-                            linkFound = true
-                            callback.invoke(link)
-                        }
+                        loadExtractor(dlUrl, "$mainUrl/", subtitleCallback, fhdCallback)
                     }
                 } catch (_: Throwable) {}
             }
@@ -1400,10 +1426,7 @@ class BLVietsubProvider : MainAPI() {
             if (!effectiveOkUrl.isNullOrEmpty() && effectiveOkUrl != dlUrl && effectiveOkUrl.startsWith("http")) {
                 try {
                     val okExtractor = OkRuExtractor()
-                    okExtractor.getUrl(effectiveOkUrl, "$mainUrl/", subtitleCallback) { link ->
-                        linkFound = true
-                        callback.invoke(link)
-                    }
+                    okExtractor.getUrl(effectiveOkUrl, "$mainUrl/", subtitleCallback, fhdCallback)
                 } catch (_: Throwable) {}
             }
 
@@ -1411,17 +1434,14 @@ class BLVietsubProvider : MainAPI() {
             if (!vkUrl.isNullOrEmpty() && vkUrl.startsWith("http")) {
                 try {
                     val vkExtractor = VkExtractor()
-                    vkExtractor.getUrl(vkUrl, "$mainUrl/", subtitleCallback) { link ->
-                        linkFound = true
-                        callback.invoke(link)
-                    }
+                    vkExtractor.getUrl(vkUrl, "$mainUrl/", subtitleCallback, fhdCallback)
                 } catch (_: Throwable) {}
             }
 
             // 5. NGUỒN HIỂN THỊ TRONG DANH SÁCH: Server GD (Google Drive) 1080p FHD
             if (!gdUrl.isNullOrEmpty() && gdUrl.startsWith("http")) {
                 try {
-                    if (extractGoogleDrive(gdUrl, callback)) {
+                    if (extractGoogleDrive(gdUrl, fhdCallback)) {
                         linkFound = true
                     }
                 } catch (_: Throwable) {}
@@ -1430,7 +1450,7 @@ class BLVietsubProvider : MainAPI() {
             // 6. NGUỒN HIỂN THỊ TRONG DANH SÁCH: Server HX (Abyss) 1080p FHD
             if (!hxUrl.isNullOrEmpty() && hxUrl.startsWith("http")) {
                 try {
-                    if (extractHxServer(hxUrl, subtitleCallback, callback)) {
+                    if (extractHxServer(hxUrl, subtitleCallback, fhdCallback)) {
                         linkFound = true
                     }
                 } catch (_: Throwable) {}
@@ -1441,8 +1461,7 @@ class BLVietsubProvider : MainAPI() {
             if (!backupUrl.isNullOrEmpty() && backupUrl.startsWith("http") && backupUrl != ssUrl && backupUrl != dlUrl && backupUrl != effectiveOkUrl && backupUrl != vkUrl && backupUrl != gdUrl && backupUrl != hxUrl) {
                 try {
                     if (backupUrl.contains(".m3u8")) {
-                        linkFound = true
-                        callback.invoke(
+                        fhdCallback.invoke(
                             newExtractorLink(
                                 source = name,
                                 name = "Server SS (SSPlay) - 1080p FHD",
@@ -1454,14 +1473,11 @@ class BLVietsubProvider : MainAPI() {
                             }
                         )
                     } else if (backupUrl.contains("drive.google.com") || backupUrl.contains("gdriveplayer")) {
-                        if (extractGoogleDrive(backupUrl, callback)) {
+                        if (extractGoogleDrive(backupUrl, fhdCallback)) {
                             linkFound = true
                         }
                     } else {
-                        loadExtractor(backupUrl, "$mainUrl/", subtitleCallback) { link ->
-                            linkFound = true
-                            callback.invoke(link)
-                        }
+                        loadExtractor(backupUrl, "$mainUrl/", subtitleCallback, fhdCallback)
                     }
                 } catch (_: Throwable) {}
             }
@@ -1482,10 +1498,7 @@ class BLVietsubProvider : MainAPI() {
         if (!ssUrl.isNullOrEmpty() && ssUrl.startsWith("http")) {
             try {
                 val ssExtractor = SSPlayExtractor()
-                ssExtractor.getUrl(ssUrl, "$mainUrl/", subtitleCallback) { link ->
-                    linkFound = true
-                    callback.invoke(link)
-                }
+                ssExtractor.getUrl(ssUrl, "$mainUrl/", subtitleCallback, fhdCallback)
             } catch (_: Throwable) {}
         }
 
@@ -1494,21 +1507,12 @@ class BLVietsubProvider : MainAPI() {
             try {
                 if (dlUrl.contains("dailymotion.com") || dlUrl.contains("dai.ly")) {
                     val dmExtractor = DailymotionExtractor()
-                    dmExtractor.getUrl(dlUrl, "$mainUrl/", subtitleCallback) { link ->
-                        linkFound = true
-                        callback.invoke(link)
-                    }
+                    dmExtractor.getUrl(dlUrl, "$mainUrl/", subtitleCallback, fhdCallback)
                 } else if (dlUrl.contains("ok.ru")) {
                     val okExtractor = OkRuExtractor()
-                    okExtractor.getUrl(dlUrl, "$mainUrl/", subtitleCallback) { link ->
-                        linkFound = true
-                        callback.invoke(link)
-                    }
+                    okExtractor.getUrl(dlUrl, "$mainUrl/", subtitleCallback, fhdCallback)
                 } else {
-                    loadExtractor(dlUrl, "$mainUrl/", subtitleCallback) { link ->
-                        linkFound = true
-                        callback.invoke(link)
-                    }
+                    loadExtractor(dlUrl, "$mainUrl/", subtitleCallback, fhdCallback)
                 }
             } catch (_: Throwable) {}
         }
@@ -1522,10 +1526,7 @@ class BLVietsubProvider : MainAPI() {
         if (!effectiveOkUrl.isNullOrEmpty() && effectiveOkUrl != dlUrl && effectiveOkUrl.startsWith("http")) {
             try {
                 val okExtractor = OkRuExtractor()
-                okExtractor.getUrl(effectiveOkUrl, "$mainUrl/", subtitleCallback) { link ->
-                    linkFound = true
-                    callback.invoke(link)
-                }
+                okExtractor.getUrl(effectiveOkUrl, "$mainUrl/", subtitleCallback, fhdCallback)
             } catch (_: Throwable) {}
         }
 
@@ -1533,17 +1534,14 @@ class BLVietsubProvider : MainAPI() {
         if (!vkUrl.isNullOrEmpty() && vkUrl.startsWith("http")) {
             try {
                 val vkExtractor = VkExtractor()
-                vkExtractor.getUrl(vkUrl, "$mainUrl/", subtitleCallback) { link ->
-                    linkFound = true
-                    callback.invoke(link)
-                }
+                vkExtractor.getUrl(vkUrl, "$mainUrl/", subtitleCallback, fhdCallback)
             } catch (_: Throwable) {}
         }
 
         // NGUỒN DỰ PHÒNG 4: Server GD (Google Drive) 1080p FHD
         if (!gdUrl.isNullOrEmpty() && gdUrl.startsWith("http")) {
             try {
-                if (extractGoogleDrive(gdUrl, callback)) {
+                if (extractGoogleDrive(gdUrl, fhdCallback)) {
                     linkFound = true
                 }
             } catch (_: Throwable) {}
@@ -1552,7 +1550,7 @@ class BLVietsubProvider : MainAPI() {
         // NGUỒN DỰ PHÒNG 5: Server HX (Abyss) 1080p FHD
         if (!hxUrl.isNullOrEmpty() && hxUrl.startsWith("http")) {
             try {
-                if (extractHxServer(hxUrl, subtitleCallback, callback)) {
+                if (extractHxServer(hxUrl, subtitleCallback, fhdCallback)) {
                     linkFound = true
                 }
             } catch (_: Throwable) {}
@@ -1563,8 +1561,7 @@ class BLVietsubProvider : MainAPI() {
         if (!backupUrl.isNullOrEmpty() && backupUrl.startsWith("http") && backupUrl != ssUrl && backupUrl != dlUrl && backupUrl != effectiveOkUrl && backupUrl != vkUrl && backupUrl != gdUrl && backupUrl != hxUrl) {
             try {
                 if (backupUrl.contains(".m3u8")) {
-                    linkFound = true
-                    callback.invoke(
+                    fhdCallback.invoke(
                         newExtractorLink(
                             source = name,
                             name = "Server SS (SSPlay) - 1080p FHD",
@@ -1576,14 +1573,11 @@ class BLVietsubProvider : MainAPI() {
                         }
                     )
                 } else if (backupUrl.contains("drive.google.com") || backupUrl.contains("gdriveplayer")) {
-                    if (extractGoogleDrive(backupUrl, callback)) {
+                    if (extractGoogleDrive(backupUrl, fhdCallback)) {
                         linkFound = true
                     }
                 } else {
-                    loadExtractor(backupUrl, "$mainUrl/", subtitleCallback) { link ->
-                        linkFound = true
-                        callback.invoke(link)
-                    }
+                    loadExtractor(backupUrl, "$mainUrl/", subtitleCallback, fhdCallback)
                 }
             } catch (_: Throwable) {}
         }
